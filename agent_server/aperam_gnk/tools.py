@@ -202,13 +202,13 @@ _RESOURCE = re.compile(r"^[A-Za-z0-9_]{2,20}$")
 
 @tool
 def gnk_oee_report(line_or_resource: str, days: int = 30) -> dict:
-    """Official OEE of ONE line over the last `days` (default 30, max 365), from the daily
-    indicators table (time model) combined with speed ratio and metal yield from metal_movements.
+    """OEE of ONE Genk line over the last `days` (default 30, max 365), Aperam definition:
+    OEE = T1 x T2 x T3 and capacity OEE = T0 x T1 x T2 x T3, from the daily indicators table.
 
-    line_or_resource: an ARMP code ('GN-CR-CRM2') or a resource code of the indicators table ('RD79').
-    Returns daily OEE / T0 / T1 / availability / MTBF / MTTR, period averages, the time-loss Pareto
-    (scheduled SD*, organisational SDO3/SDO4, failures by family FTO/FTP/FTS/FTT-E/G/I/M/FTW,
-    unproductive UOT) and the failure-family split.
+    line_or_resource: an ARMP code ('GN-CR-CRM2') or a GNK resource code of the indicators table.
+    T0 (opening = LT/CT) and T1 (availability = ROT/LT) are official; T2 and T3 are proxies from
+    metal_movements (speed realised/setpoint, metal yield). Returns daily values, period totals, MTBF / MTTR
+    and the time-loss Pareto by TUC code (SDC, SDM, SDE, SDO1-4, SDP, FTT, FTP, FTO, FTS, FTW, UOT).
     """
     key = (line_or_resource or "").strip()
     armp = _check_armp(key)
@@ -221,30 +221,32 @@ def gnk_oee_report(line_or_resource: str, days: int = 30) -> dict:
     days = max(1, min(int(days or 30), 365))
     p["since"] = (site_now() - timedelta(days=days)).date().isoformat()
     daily = _q(
-        "SELECT resource, line_armp, prod_date, round(oee,3) AS oee, round(t0_loading_rate,3) AS t0,"
-        " round(t1_rot_over_lt,3) AS t1_rot_over_lt, round(availability_ts,3) AS availability_ts,"
-        " round(rot_over_ts,3) AS rot_over_ts, round(speed_ratio,3) AS speed_ratio, round(yield,4) AS yield,"
-        " round(loading_h,1) AS loading_h, round(rot_h,1) AS rot_h, round(failure_h,2) AS failure_h,"
-        " round(unproductive_h,2) AS unproductive_h, round(organisational_h,2) AS organisational_h,"
-        " n_failures, round(mtbf_h,1) AS mtbf_h, round(mttr_min) AS mttr_min, n_coils, round(tonnes,1) AS tonnes"
+        "SELECT resource, line_armp, prod_date, round(oee_t1t2t3,3) AS oee_t1t2t3,"
+        " round(oee_t0t1t2t3,3) AS oee_t0t1t2t3, round(t0_opening,3) AS t0_opening,"
+        " round(t1_availability,3) AS t1_availability, round(t2_proxy,3) AS t2_proxy, round(t3_proxy,4) AS t3_proxy,"
+        " round(loading_h,1) AS loading_h, round(rot_h,1) AS rot_h, round(ft_h,2) AS ft_h,"
+        " round(uot_unproductive_h,2) AS uot_h, round(scheduled_in_lt_h,2) AS scheduled_in_lt_h,"
+        " n_ft, n_fust, round(mtbf_h,1) AS mtbf_h, round(mttr_min) AS mttr_min, n_coil, n_stri,"
+        " round(tonnes,1) AS tonnes"
         f" FROM gold_gnk_oee_day WHERE {where} AND prod_date >= %(since)s ORDER BY prod_date", p, "gnk_tool_oee_daily")
     totals = _q(
-        "SELECT sum(loading_h) AS loading_h, sum(rot_h) AS rot_h, sum(failure_h) AS failure_h,"
-        " sum(unproductive_h) AS unproductive_h, sum(organisational_h) AS organisational_h,"
-        " sum(n_failures) AS n_failures, sum(rot_h) / nullif(sum(loading_h), 0) AS t1_rot_over_lt,"
-        " sum(loading_h) / nullif(sum(calendar_h), 0) AS t0_loading_rate,"
-        " (sum(rot_h) + sum(failure_h) + sum(unproductive_h)) / nullif(sum(n_failures), 0) AS mtbf_h,"
-        " 60 * sum(failure_h) / nullif(sum(n_failures), 0) AS mttr_min,"
-        " sum(oee * loading_h) / nullif(sum(loading_h), 0) AS oee_loading_weighted"
+        "SELECT sum(calendar_h) AS calendar_h, sum(loading_h) AS loading_h, sum(rot_h) AS rot_h,"
+        " sum(ft_h) AS ft_h, sum(uot_unproductive_h) AS uot_h, sum(n_ft) AS n_ft,"
+        " sum(loading_h) / nullif(sum(calendar_h), 0) AS t0_opening,"
+        " sum(rot_h) / nullif(sum(loading_h), 0) AS t1_availability,"
+        " sum(service_h) / nullif(sum(n_ft), 0) AS mtbf_h,"
+        " 60 * sum(ft_h) / nullif(sum(n_ft), 0) AS mttr_min,"
+        " sum(oee_t1t2t3 * loading_h) / nullif(sum(loading_h), 0) AS oee_t1t2t3,"
+        " sum(oee_t0t1t2t3 * calendar_h) / nullif(sum(calendar_h), 0) AS oee_t0t1t2t3"
         f" FROM gold_gnk_oee_day WHERE {where} AND prod_date >= %(since)s", p, "gnk_tool_oee_totals")
     pareto = _q(
-        "SELECT level, loss_code, round(sum(loss_h),1) AS loss_h, count(DISTINCT prod_date) AS days_with_loss"
+        "SELECT band, tuc_code, tuc_label, round(sum(loss_h),1) AS loss_h, count(DISTINCT prod_date) AS days_with_loss"
         f" FROM gold_gnk_time_losses_day WHERE {where} AND prod_date >= %(since)s"
-        " GROUP BY level, loss_code ORDER BY loss_h DESC", p, "gnk_tool_oee_pareto")
+        " GROUP BY band, tuc_code, tuc_label ORDER BY loss_h DESC", p, "gnk_tool_oee_pareto")
     return {"key": key, "days": days, "period_totals": totals[0] if totals else {}, "loss_pareto_h": pareto,
             "daily": daily,
-            "note": "oee = ROT/LT x speed ratio x yield; speed/yield are 1 when the resource is not mapped to "
-                    "an ARMP line (gnk_resource_map) or no coil movement exists that day"}
+            "note": "T0, T1 official (indicators table). T2 = SpeedRealised/SpeedSetpoint and T3 = metal yield are "
+                    "proxies from metal_movements (1 when missing). Only resources mapped to site GNK are included."}
 
 
 GNK_TOOLS = (gnk_line_status, gnk_coil_trace, gnk_sensor_scan, gnk_flow_overview, gnk_oee_report)

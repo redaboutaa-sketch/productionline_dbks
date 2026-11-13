@@ -73,11 +73,15 @@ def main() -> int:
         if n == 0:
             empty.append(obj)
     spark.sql("SELECT * FROM tgt.gold_gnk_wip_buffers ORDER BY tonnes_waiting DESC").show(10, False)
-    spark.sql("SELECT resource, line_armp, prod_date, round(t1_rot_over_lt,3) t1, round(speed_ratio,3) sr,"
-              " round(yield,3) y, round(oee,3) oee, round(failure_h,1) ft_h, round(mttr_min) mttr"
-              " FROM tgt.gold_gnk_oee_day ORDER BY resource, prod_date").show(25, False)
-    spark.sql("SELECT line_armp, level, loss_code, round(sum(loss_h),1) h FROM tgt.gold_gnk_time_losses_day"
-              " GROUP BY 1,2,3 ORDER BY h DESC").show(8, False)
+    spark.sql("SELECT resource, line_armp, prod_date, round(t0_opening,3) t0, round(t1_availability,3) t1,"
+              " round(t2_proxy,3) t2, round(t3_proxy,3) t3, round(oee_t1t2t3,3) oee, round(oee_t0t1t2t3,3) oee_cap,"
+              " round(ft_h,1) ft_h, round(mttr_min) mttr FROM tgt.gold_gnk_oee_day ORDER BY resource, prod_date"
+              ).show(25, False)
+    spark.sql("SELECT line_armp, band, tuc_code, tuc_label, round(sum(loss_h),1) h FROM tgt.gold_gnk_time_losses_day"
+              " GROUP BY 1,2,3,4 ORDER BY h DESC").show(8, False)
+    spark.sql("SELECT * FROM tgt.gnk_indicators_resources ORDER BY resource").show(10, False)
+    gap = spark.sql("SELECT max(abs(ts_identity_gap)) g FROM tgt.gnk_indicators_day").first()["g"]
+    print(f"TS identity max gap: {gap}")
     failures = _run_agent_sql(spark)
     spark.sql("SELECT line_armp, gap_start, gap_min FROM tgt.gold_gnk_line_gaps ORDER BY gap_min DESC").show(5, False)
     spark.stop()

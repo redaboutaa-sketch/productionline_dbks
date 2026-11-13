@@ -19,8 +19,8 @@ plus GNK-only slices that ``gnk_trim_slices`` hands to the specialists:
     recent_gaps     closed stops (gaps between coils) over the last 24 h
     sensor_alerts   tags out of range while producing, last 8 h
     line_kpi_7d     per-line shift KPIs over the last 7 days (baseline for comparisons)
-    oee_days_7d     official daily OEE (time model of indicators_day_label x speed x yield), 7 days
-    time_losses_7d  biggest time losses over 7 days (scheduled, organisational, failures, UOT)
+    oee_days_7d     daily OEE, Aperam definition (T0, T1 official; T2, T3 proxies), 7 days
+    time_losses_7d  biggest time losses over 7 days by TUC code (SD*, FT*, UOT)
 """
 
 from __future__ import annotations
@@ -154,20 +154,20 @@ def _queries(shift_date: date, shift_name: str, now: datetime) -> dict[str, tupl
             {"since": (now - timedelta(hours=8)).isoformat(sep=" ")}, "gnk_sensor_alerts",
         ),
         "oee_days": (
-            "SELECT resource, line_armp, line_name, prod_date, round(oee, 3) AS oee,"
-            " round(t1_rot_over_lt, 3) AS t1_rot_over_lt, round(t0_loading_rate, 3) AS t0_loading_rate,"
-            " round(availability_ts, 3) AS availability_ts, round(speed_ratio, 3) AS speed_ratio,"
-            " round(yield, 4) AS yield, round(loading_h, 1) AS loading_h, round(rot_h, 1) AS rot_h,"
-            " round(failure_h, 1) AS failure_h, round(unproductive_h, 1) AS unproductive_h,"
-            " round(organisational_h, 1) AS organisational_h, n_failures, round(mtbf_h, 1) AS mtbf_h,"
-            " round(mttr_min) AS mttr_min, n_coils"
+            "SELECT resource, line_armp, line_name, prod_date, round(oee_t1t2t3, 3) AS oee_t1t2t3,"
+            " round(oee_t0t1t2t3, 3) AS oee_t0t1t2t3, round(t0_opening, 3) AS t0_opening,"
+            " round(t1_availability, 3) AS t1_availability, round(t2_proxy, 3) AS t2_proxy,"
+            " round(t3_proxy, 4) AS t3_proxy, round(loading_h, 1) AS loading_h, round(rot_h, 1) AS rot_h,"
+            " round(ft_h, 1) AS ft_h, round(uot_unproductive_h, 1) AS uot_h,"
+            " round(scheduled_in_lt_h, 1) AS scheduled_in_lt_h, n_ft, round(mtbf_h, 1) AS mtbf_h,"
+            " round(mttr_min) AS mttr_min, n_coil"
             " FROM gold_gnk_oee_day WHERE prod_date >= %(d7)s ORDER BY line_armp, prod_date",
             {"d7": (shift_date - timedelta(days=7)).isoformat()}, "gnk_oee_days",
         ),
         "losses_7d": (
-            "SELECT line_armp, resource, level, loss_code, round(sum(loss_h), 1) AS loss_h"
+            "SELECT line_armp, resource, band, tuc_code, tuc_label, round(sum(loss_h), 1) AS loss_h"
             " FROM gold_gnk_time_losses_day WHERE prod_date >= %(d7)s"
-            " GROUP BY line_armp, resource, level, loss_code ORDER BY loss_h DESC LIMIT 15",
+            " GROUP BY line_armp, resource, band, tuc_code, tuc_label ORDER BY loss_h DESC LIMIT 15",
             {"d7": (shift_date - timedelta(days=7)).isoformat()}, "gnk_losses_7d",
         ),
         "registry": (

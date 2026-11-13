@@ -61,16 +61,17 @@ DEFAULT_INDICATORS_TABLE = "dev_weu_next_best_action.raw.indicators_day_label"
 TIME_MODEL_SQL = "60_gold_gnk_time_model.sql"
 
 
-def load_resource_map(path: Path = RESOURCE_MAP_CSV) -> list[tuple[str, str | None, str | None]]:
-    """indicators_day_label.resource -> ARMP line (blank line_armp = not mapped yet)."""
+def load_resource_map(path: Path = RESOURCE_MAP_CSV) -> list[tuple[str, str | None, str | None, str | None]]:
+    """indicators_day_label.resource -> (site, ARMP line). Only site 'GNK' rows enter the GNK views."""
     import csv
 
     with path.open(encoding="utf-8") as fh:
-        return [(r["resource"].strip(), (r.get("line_armp") or "").strip() or None, (r.get("comment") or "").strip() or None)
+        return [(r["resource"].strip(), (r.get("site") or "").strip() or None,
+                 (r.get("line_armp") or "").strip() or None, (r.get("comment") or "").strip() or None)
                 for r in csv.DictReader(fh) if r.get("resource", "").strip()]
 
 
-def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | None, str | None]] | None = None) -> list[str]:
+def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | None, str | None, str | None]] | None = None) -> list[str]:
     """CREATE TABLE statements for the reference data owned by assets.py."""
     registry = _values_table(
         f"{tgt}.gnk_line_registry",
@@ -130,7 +131,7 @@ def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | Non
     )
     resource_map = _values_table(
         f"{tgt}.gnk_resource_map",
-        [("resource", "STRING"), ("line_armp", "STRING"), ("comment", "STRING")],
+        [("resource", "STRING"), ("site", "STRING"), ("line_armp", "STRING"), ("comment", "STRING")],
         [*load_resource_map(), *(extra_resource_map or [])],
     )
     return [registry, mapping, tags, resource_map]
@@ -152,7 +153,7 @@ def now_local_sql(tz: str = SITE_TZ) -> str:
 
 def render_statements(src: str, tgt: str, sensor_lookback_days: int = 30,
                       include_reference: bool = True, indicators: str | None = DEFAULT_INDICATORS_TABLE,
-                      extra_resource_map: list[tuple[str, str | None, str | None]] | None = None) -> list[str]:
+                      extra_resource_map: list[tuple[str, str | None, str | None, str | None]] | None = None) -> list[str]:
     """All statements in dependency order. ``indicators`` = fully qualified daily OEE indicators table
     (``None`` skips the time-model views)."""
     for ident in (src, tgt, indicators or "x.y"):

@@ -95,7 +95,7 @@ def test_every_gold_object_is_created():
         "gold_gnk_line_kpi_shift", "gold_gnk_line_kpi_shift_oee", "gold_gnk_line_kpi_daily",
         "gold_gnk_line_reference_rate", "gold_gnk_coil_position", "gold_gnk_wip_buffers", "gold_gnk_line_gaps",
         "gnk_sensor", "gold_gnk_sensor_health_hourly", "gold_gnk_sensor_by_coil", "gnk_resource_map",
-        "gnk_indicators_day", "gold_gnk_time_losses_day", "gold_gnk_oee_day",
+        "gnk_indicators_day", "gold_gnk_time_losses_day", "gold_gnk_oee_day", "gnk_indicators_resources",
     ):
         assert re.search(rf"CREATE OR REPLACE (VIEW|TABLE) t\.t\.{obj}\b", text), obj
 
@@ -151,12 +151,25 @@ def test_indicators_table_is_wired_and_optional():
     skipped = "\n".join(render_statements("s.s", "t.t", indicators=None))
     assert "gold_gnk_oee_day" not in skipped
     custom = "\n".join(render_statements("s.s", "t.t", indicators="c.r.indicators_day_label",
-                                         extra_resource_map=[("SYN_X", "GN-CR-APL3", "synthetic")]))
+                                         extra_resource_map=[("SYN_X", "GNK", "GN-CR-APL3", "synthetic")]))
     assert "FROM c.r.indicators_day_label" in custom and "'SYN_X'" in custom
 
 
-def test_resource_map_csv_has_the_known_resource():
-    assert any(r == "RD79" for r, _, _ in load_resource_map())
+def test_rd79_is_gueugnon_and_excluded_from_gnk():
+    rows = {r: (site, armp) for r, site, armp, _ in load_resource_map()}
+    assert rows["RD79"] == ("GGN", None)
+    text = "\n".join(render_statements("s.s", "t.t"))
+    assert "rm.site = 'GNK'" in text  # only GNK resources enter gnk_indicators_day
+
+
+def test_time_model_uses_the_aperam_labels():
+    text = "\n".join(render_statements("s.s", "t.t"))
+    for code, label in (("SDC", "Plant shutdown"), ("SDM", "No material"), ("SDE", "No electricity"),
+                        ("SDO1", "Annual maintenance"), ("SDO2", "Capital investments"),
+                        ("SDO3", "Periodic maintenance"), ("SDO4", "Cleaning"), ("SDP", "No staff"),
+                        ("FTP", "Product / quality"), ("FTO", "Operator"), ("FTS", "Staff"), ("FTW", "Waiting")):
+        assert f"'{code}'" in text and f"'{label}'" in text, code
+    assert text.count("definition pending") >= 4  # FTTE/G/I/M stay undefined
 
 
 def test_synthetic_indicators_respect_the_time_model(synthetic):

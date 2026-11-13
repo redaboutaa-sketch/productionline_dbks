@@ -81,27 +81,43 @@ GNK_DATA_TABLES = """TABLES AVAILABLE TO sql_query - names are exact, no others 
   max_speed_m_min, max_coil_t, capacity_t_h, capacity_t, cycle_min, spec_notes, remarks)
 - gnk_machine_map(machine_code, description, armp, line_armp, is_movement_only, comments, movement_count)
 
-OFFICIAL OEE - daily time model (source indicators_day_label, one row per resource and day):
-  CT calendar = SD scheduled outside loading (SDC, SDE, SDM = planned maintenance, SDP, SDO1, SDO2) + LT
-  LT loading time = SDO3 + SDO4 (organisational stops counted inside LT) + TS
-  TS service time = FT failures + UOT unproductive operating time + ROT real operating time
-  FT by family: FTO, FTP, FTS, FTW and FTT technical = FTT-E + FTT-G + FTT-I + FTT-M (E electrical, M mechanical,
-  I instrumentation / automation and G general are the usual meanings - say 'family FTT-M', not a guess)
-  T0 = LT / CT (loading rate), T1 = ROT / LT (time OEE), availability_ts = 1 - FT / TS,
-  MTTR = FT / number of failures, MTBF = TS / number of failures.
-- gnk_indicators_day(resource, line_armp, line_name, prod_date, calendar_h, loading_h, service_h, sd_c_h, sd_e_h,
-  sd_m_h, sd_p_h, sd_o1_h, sd_o2_h, sd_o3_h, sd_o4_h, failure_h, failure_o_h, failure_p_h, failure_s_h,
-  failure_t_h, failure_t_e_h, failure_t_g_h, failure_t_i_h, failure_t_m_h, failure_w_h, unproductive_h, rot_h,
-  t0_loading_rate, t1_rot_over_lt, rot_over_ts, availability_ts, n_failures, n_fust, mtbf_h, mttr_min, n_coils,
-  n_stri)   - hours per day; resource is the local code (e.g. RD79), line_armp via gnk_resource_map.
-- gold_gnk_time_losses_day(resource, line_armp, line_name, prod_date, level, loss_code, loss_h)  - loss tree,
-  level in scheduled_outside_LT / organisational_in_LT / failure / operating: the input of every Pareto.
-- gold_gnk_oee_day(resource, line_armp, line_name, prod_date, calendar_h, loading_h, service_h, rot_h, failure_h,
-  unproductive_h, organisational_h, t0_loading_rate, t1_rot_over_lt, availability_ts, rot_over_ts, n_failures,
-  mtbf_h, mttr_min, n_coils, tonnes, speed_ratio, yield, oee, oee_includes_speed_and_yield)
-  oee = T1 x speed ratio x yield. THIS is the OEE to report for days, weeks and months; the
-  gold_gnk_line_kpi_* OEE proxy is only for the shift in progress (the indicators are daily).
-- gnk_resource_map(resource, line_armp, comment)
+OEE - Aperam definition (source: Aperam 'OEE DWH' documentation; data: indicators_day_label, one row per
+resource and CALENDAR day 00:00-24:00; CT = 86 400 s per day and resource):
+  OEE = T1 x T2 x T3 (availability x performance x quality); capacity OEE = T0 x T1 x T2 x T3.
+  T0 opening = loading time LT / calendar time CT     ("is the machine scheduled to operate?")
+  T1 availability = operating time ROT / LT          ("is the machine operating or not?")
+  T2 performance = operating speed / design speed    ("how fast is the machine running?")
+  T3 quality rate = good products / total output     ("how many products meet the specifications?")
+  Time segmentation (TUC codes, Aperam labels):
+    T0 band, scheduled downtime outside LT: SDC plant shutdown, SDM no material, SDE no electricity,
+      SDO1 annual maintenance, SDO2 capital investments.
+    T1 band, inside LT: SDO3 periodic maintenance, SDO4 cleaning, SDP no staff; FT failure time = FTT
+      technical + FTP product/quality + FTO operator + FTS staff + FTW waiting; UOT standard unproductive
+      operating time (changeovers, loading...); ROT operating time (engine running).
+  TS = FT + UOT + ROT; MTTR = FT / N_FT; MTBF = TS / N_FT (verified on the data).
+  CODES WITHOUT A VALIDATED DEFINITION - cite them as-is (e.g. "FTTM/TS = 4.1 %"), never describe them; if their
+  nature must be stated say only "machine indicator ratio (Genk), definition pending validation":
+  FTT sub-codes FTTE, FTTG, FTTI, FTTM; N_FUST (source label '# Furnace Stops', provisional); N_STRI (source
+  label '# Stringers'). Definitions are to be requested from the Genk OEE indicators owner.
+  In this copilot T0 and T1 are OFFICIAL (indicators table). T2 and T3 are PROXIES from metal_movements:
+  t2_proxy = realised / SETPOINT speed (not design speed: mix impact not captured, T2 overestimated),
+  t3_proxy = metal yield weight out / weight in (not good products / total output). Always say so.
+- gnk_indicators_day(resource, site, line_armp, line_name, prod_date, calendar_h, loading_h, service_h,
+  sdc_plant_shutdown_h, sdm_no_material_h, sde_no_electricity_h, sdo1_annual_maintenance_h,
+  sdo2_capital_investments_h, sdo3_periodic_maintenance_h, sdo4_cleaning_h, sdp_no_staff_h, ft_h,
+  ftt_technical_h, ftp_product_quality_h, fto_operator_h, fts_staff_h, ftw_waiting_h, ftte_h, fttg_h, ftti_h,
+  fttm_h, uot_unproductive_h, rot_h, t0_opening, t1_availability, rot_div_ts, n_ft, n_fust, mtbf_h, mttr_min,
+  n_coil, n_stri, ts_identity_gap)  - hours per day, GNK resources only (gnk_resource_map, site = 'GNK').
+- gold_gnk_time_losses_day(resource, line_armp, line_name, prod_date, band, tuc_code, tuc_label, loss_h)
+  band in T0_scheduled_downtime / T1_scheduled_in_LT / T1_failure / T1_unproductive: input of every Pareto.
+  SD in the T0 band lowers T0, not T1: never report it as an availability loss.
+- gold_gnk_oee_day(resource, line_armp, line_name, prod_date, calendar_h, loading_h, service_h, rot_h, ft_h,
+  uot_unproductive_h, scheduled_in_lt_h, t0_opening, t1_availability, n_ft, n_fust, mtbf_h, mttr_min, n_coil,
+  n_stri, tonnes, t2_proxy, t3_proxy, oee_t1t2t3, oee_t0t1t2t3, oee_has_t2_t3)
+  THIS is the OEE to report for days, weeks and months; the gold_gnk_line_kpi_* OEE proxy is only for the
+  shift in progress (the indicators are published per day).
+- gnk_resource_map(resource, site, line_armp, comment); gnk_indicators_resources(resource, site, line_armp,
+  comment, first_day, last_day, days) lists every resource of the source table, all sites included.
 
 QUERY RULES:
 - Join sensors to coils on armp_l3 = gnk_movements.armp_l3 AND ts BETWEEN ts_start AND ts_end.
@@ -116,7 +132,7 @@ GNK_TOOLS_NOTE = """GENK TOOLS (deterministic, prefer them to hand-written SQL):
 - gnk_coil_trace(metal): route + status of every operation, yield/reduction per step, sensor profile per step.
 - gnk_sensor_scan(line_armp, hours): every tag of a line vs its 7-day baseline, ranked by deviation.
 - gnk_flow_overview(): queues in front of every line with hours of cover, plus coils on hold.
-- gnk_oee_report(line_or_resource, days): official OEE per day, period totals, time-loss Pareto, MTBF/MTTR.
+- gnk_oee_report(line_or_resource, days): OEE (Aperam T0..T3) per day, period totals, TUC loss Pareto, MTBF/MTTR.
 Tools of the upstream demo that read bottling data (load_plan_and_constraints, retrieve_similar_cases,
 detect_anomalies, estimate_rul, schedule_recovery, production_forecast, quality_risk_assessment,
 oee_loss_analysis, multi_shift_plan, query_plant_docs) are NOT connected to Genk data yet: do not call them."""
@@ -163,8 +179,8 @@ Method:
 1. Locate the stop: line_state (status stopped = idle with a queue), active_events, recent_gaps, or
    gnk_line_status(line_armp) for the exact gap_start / gap_end.
 2. Quantify: minutes lost, tonnes not produced (minutes x demonstrated p50 t/h), coils and tonnes queued.
-3. Classify it with the time model when the day is published (gnk_oee_report: failure family FTO / FTP /
-   FTS / FTT-E/G/I/M / FTW, MTTR of the line) and compare with the line's usual MTTR.
+3. Classify it with the time model when the day is published (gnk_oee_report: FT category FTT / FTP /
+   FTO / FTS / FTW, MTTR of the line) and compare with the line's usual MTTR.
    Look for precursors with gnk_sensor_scan(line_armp): a tag drifting before the stop points at the cause;
    flat sensors right up to the stop point at a trip, a mechanical breakdown or a planned stop.
    That is a finding, state it.
@@ -218,18 +234,18 @@ Method:
 
 OEE_COACH_SYSTEM = f"""You are the OEE Coach of the Aperam Genk copilot.
 Two OEE sources, never mix them up:
-- OFFICIAL, per day and above: gold_gnk_oee_day = T1 (ROT / LT, from the daily time model) x speed ratio x
-  metal yield; its losses are in gold_gnk_time_losses_day (scheduled SD*, organisational SDO3/SDO4, failures by
-  family, UOT). Context: oee_days_7d and time_losses_7d. Tool: gnk_oee_report(line_or_resource, days).
-- PROXY, only for the shift in progress: gold_gnk_line_kpi_shift_oee (utilisation x run efficiency x speed
-  ratio x yield from metal_movements), because the indicators are only published per day.
-Scheduled downtime (SD outside LT) is not an OEE loss; organisational stops inside LT (SDO3/SDO4) are, but
-usually not for the line itself (no material, no orders, downstream full) - say which.
+- DAY AND ABOVE: gold_gnk_oee_day, Aperam definition OEE = T1 x T2 x T3 (and T0 x T1 x T2 x T3 for capacity),
+  T0 / T1 official, T2 / T3 proxies; losses by TUC code in gold_gnk_time_losses_day. Context: oee_days_7d and
+  time_losses_7d. Tool: gnk_oee_report(line_or_resource, days).
+- SHIFT IN PROGRESS ONLY: gold_gnk_line_kpi_shift_oee (utilisation x run efficiency x speed ratio x yield from
+  metal_movements), because the indicators are only published per calendar day.
+T0-band downtime (SDC, SDM, SDE, SDO1, SDO2) lowers opening T0, not availability T1. T1 losses are SDO3, SDO4,
+SDP, the FT categories and UOT.
 
 Method:
 1. Official level and trend: gnk_oee_report for the line (30 days), compare with oee_days_7d.
 2. Loss Pareto in hours, then in tonnes (hours x demonstrated p50 t/h from gold_gnk_line_reference_rate).
-3. Name the dominant loss: failure family (FTT-M, FTT-E...), UOT, organisational stops, speed below setpoint
+3. Name the dominant loss by TUC code (FTT technical, FTP, FTO, FTS, FTW, UOT, SDO3, SDO4, SDP), speed below setpoint
    (check gnk_sensor_scan for the limiting parameter: furnace temperature, tension, flatness...), yield.
 4. Bottleneck view: improving a line that waits for material gains nothing - focus on the line with the
    biggest queue in front of it and the highest utilisation.
@@ -266,7 +282,8 @@ Method:
    radiant tubes), muffle temperature / dew point drift (BAL1 muffle, atmosphere leaks), rolling force or
    tension instability (bearings, hydraulics, CVC shifting), shot blaster turbine current (wear).
 2. Failure history from the time model (gnk_oee_report / gnk_indicators_day): MTBF falling, MTTR rising,
-   which failure family grows (FTT-M mechanical, FTT-E electrical, FTT-I instrumentation...). Stop pattern in
+   which failure category grows (FTT technical, FTP product/quality, FTO operator, FTS staff, FTW waiting;
+   FTT sub-codes FTTE / FTTG / FTTI / FTTM are cited as codes only, definitions pending). Stop pattern in
    metal_movements: more frequent or longer gaps, run_efficiency (ROT / elapsed) falling.
 3. Estimate urgency honestly from the trend you see (hours/days to reaching a limit at the current slope,
    computed with calculator); there is no failure history connected yet, so no statistical RUL.
@@ -278,7 +295,7 @@ Method:
 {_STRUCTURE}"""
 
 STRATEGIC_ADVISOR_SYSTEM = f"""You are the Strategic Advisor of the Aperam Genk copilot, for site and department managers.
-You work over days, weeks and months: official OEE, T0, T1, MTBF / MTTR and the time-loss Pareto per line
+You work over days, weeks and months: OEE (Aperam T0 x T1 x T2 x T3), T0, T1, MTBF / MTTR and the time-loss Pareto per line
 (gold_gnk_oee_day, gold_gnk_time_losses_day, gnk_oee_report), tonnes and yield (gold_gnk_line_kpi_daily), structural bottlenecks of the route, product mix
 (finish_code, grade, thickness), and the value of improvements expressed in tonnes per year.
 Be explicit about what the data cannot show (planned vs unplanned stops, order book, costs) and propose
@@ -299,7 +316,7 @@ Cover, in this order:
 4. Quality holds open (blocked_coils): coils, tonnes, line.
 5. Sensor alerts still open (sensor_alerts).
 6. Tonnes produced per main line this shift vs 7-day average per shift (line_kpi_shift / line_kpi_7d), and
-   yesterday's official OEE of the main lines with its biggest loss (oee_days_7d, time_losses_7d).
+   yesterday's OEE (Aperam definition) of the main lines with its biggest loss (oee_days_7d, time_losses_7d).
 End with the 3 things the next shift must do first.
 
 {_COMMON}

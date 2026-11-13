@@ -23,33 +23,63 @@ données Aperam** (`metal_movements`, `timebased_sensor`, arbre ARMP) au lieu du
 | Contexte live Lakebase | Contexte construit depuis la couche gold : état des lignes (marche / dégradée / arrêtée avec file / affamée), KPI du poste, situations ouvertes | `agent_server/aperam_gnk/context.py` |
 | Prompts « production line » | Orchestrateur (EN/FR/NL) + 8 spécialistes + synthèse réécrits pour l'inox Genk | `agent_server/aperam_gnk/prompts.py` |
 | Outils lisant les tables d'embouteillage | 4 outils SQL déterministes : `gnk_line_status`, `gnk_coil_trace`, `gnk_sensor_scan`, `gnk_flow_overview` (+ `sql_query`, `calculator`) | `agent_server/aperam_gnk/tools.py` |
-| OEE A × P × Q | **OEE officiel journalier** = T1 (ROT / LT, issu du modèle de temps de `indicators_day_label`) × ratio de vitesse × rendement métal, avec l'arbre de pertes et le MTBF / MTTR | `src/aperam_gnk/sql/60_gold_gnk_time_model.sql` |
+| OEE A × P × Q | **OEE journalier selon la définition Aperam** : T0 × T1 × T2 × T3, avec T0 et T1 officiels (`indicators_day_label`), T2 et T3 approchés depuis `metal_movements`, Pareto par code TUC, MTBF / MTTR | `src/aperam_gnk/sql/60_gold_gnk_time_model.sql` |
 | Générateur de données synthétiques | Générateur au **schéma exact** de vos tables, avec 3 incidents injectés (panne MKW2, zone 7 four BUL3, point de rosée BAL1) | `src/aperam_gnk/synthetic.py` |
 
-### Modèle de temps OEE (`indicators_day_label`)
+### OEE selon la définition Aperam (`indicators_day_label`)
 
-La table contient une ligne par ressource (`resource`, ex. `RD79`) et par jour. Les ratios y sont
-exprimés par rapport à trois bases : CT (temps calendaire), LT (temps requis) et TS (temps de service).
-J'ai reconstitué le modèle à partir des valeurs reçues. Les égalités ci-dessous se vérifient
-exactement sur vos lignes :
+Source des définitions : documentation Aperam « OEE DWH ». La table contient une ligne par ressource et
+par **jour calendaire (0 h-24 h)**. CT vaut 86 400 s par jour et par ressource.
 
 ```
-CT  = SD hors temps requis (SDC, SDE, SDM, SDP, SDO1, SDO2) + LT
-LT  = SDO3 + SDO4 (arrêts organisationnels comptés dans LT) + TS
-TS  = FT (pannes) + UOT (temps de marche non productif) + ROT (temps de marche réel)
-FT  = FTO + FTP + FTS + FTT + FTW        FTT = FTT-E + FTT-G + FTT-I + FTT-M
-T0  = LT / CT        T1 = ROT / LT        MTTR = FT / N_FT        MTBF = TS / N_FT
+OEE = T1 × T2 × T3                         (disponibilité × performance × qualité)
+OEE capacité = T0 × T1 × T2 × T3
+T0 ouverture      = LT / CT                (temps requis / temps calendaire)
+T1 disponibilité  = ROT / LT               (temps de fonctionnement / temps requis)
+T2 performance    = vitesse réelle / vitesse nominale (design)
+T3 qualité        = produits bons / production totale
 ```
 
-`gnk_indicators_day` reconstitue les heures de chaque poste du modèle.
-`gold_gnk_time_losses_day` donne l'arbre des pertes, qui sert d'entrée aux Pareto.
-`gold_gnk_oee_day` combine T1 avec la vitesse et le rendement issus de `metal_movements`.
+| Bande | Code TUC | Libellé Aperam |
+| --- | --- | --- |
+| T0 (hors LT) | SDC, SDM, SDE | Arrêt usine, manque de matière, manque d'électricité |
+| T0 (hors LT) | SDO1, SDO2 | Maintenance annuelle, investissements |
+| T1 (dans LT) | SDO3, SDO4, SDP | Maintenance périodique, nettoyage, manque de personnel |
+| T1 (dans LT) | FTT, FTP, FTO, FTS, FTW | Pannes et arrêts : technique, produit/qualité, opérateur, personnel, attente |
+| T1 (dans LT) | UOT | Temps improductif standard (changements, chargement…) |
+| T2 | ROT | Temps de fonctionnement |
 
-Pour cette combinaison, chaque ressource doit être rattachée à une ligne ARMP dans
-`src/aperam_gnk/reference/resource_map_gnk.csv`. Pour l'instant, `RD79` n'y est rattachée à aucune
-ligne : son OEE se limite alors à T1. Les agents utilisent cet OEE officiel pour les analyses par
-jour, semaine ou mois. L'OEE approché (proxy) issu de `metal_movements` ne sert que pour le poste en
-cours.
+Égalités vérifiées sur les données : TS = FT + UOT + ROT, TS = LT − SDO3 − SDO4, T1 = ROT / LT,
+MTTR = FT / N_FT, MTBF = TS / N_FT. SDP est supposé dans LT, conformément à la définition ; aucune
+ligne de données disponible ne contenait de SDP pour le vérifier.
+
+**Codes sans définition validée.** Les agents les citent tels quels (ex. « FTTM/TS = 4,1 % »). Quand
+il faut préciser leur nature, ils écrivent seulement « ratio d'indicateur machine (Genk), définition en
+attente de validation ».
+
+- Sous-codes `FTTE`, `FTTG`, `FTTI`, `FTTM` : ce sont des sous-codes de FTT, rien de plus n'est connu.
+- `N_FUST` : libellé source « # Furnace Stops », définition provisoire.
+- `N_STRI` : libellé source « # Stringers ».
+
+Les définitions sont à demander au responsable des indicateurs OEE de Genk.
+
+**Dans le copilote**, T0 et T1 sont officiels : ils viennent de la table d'indicateurs. T2 et T3 sont
+des **approximations** calculées à partir de `metal_movements` :
+
+- T2 ≈ vitesse réalisée / vitesse de consigne. La consigne n'est pas la vitesse nominale, donc l'effet
+  mix n'est pas capté et T2 est surestimé.
+- T3 ≈ rendement métal (poids sortie / poids entrée).
+
+Les agents le précisent systématiquement.
+
+**Périmètre site.** La table contient plusieurs sites. Seules les ressources déclarées `site = GNK`
+dans `src/aperam_gnk/reference/resource_map_gnk.csv` entrent dans les vues GNK. `RD79` est une
+ressource de **Gueugnon (GGN)**, elle est exclue. La vue `gnk_indicators_resources` liste toutes les
+ressources présentes dans la source, avec leurs dates : elle sert à identifier les ressources de Genk à
+déclarer.
+
+Vues : `gnk_indicators_day` (heures par code TUC), `gold_gnk_time_losses_day` (Pareto par code TUC et
+bande T0 / T1) et `gold_gnk_oee_day` (`oee_t1t2t3`, `oee_t0t1t2t3`, `t2_proxy`, `t3_proxy`).
 
 ### Les 8 spécialistes en mode GNK
 
@@ -127,10 +157,13 @@ Le code est écrit pour être corrigé en un seul endroit si une hypothèse est 
 7. **Postes** : 3 × 8 h, 06-14 / 14-22 / 22-06, en heure locale (Europe/Brussels) ?
 8. **Emballage** : seules les opérations `PCKI`, `PCKG`, `PCK` comptent (commentaire du mapping).
 9. **Indicateurs journaliers** :
-   - à quelle ligne ARMP correspond `RD79` ? Et quelles autres ressources existent ?
-   - que signifient exactement SDC, SDE, SDP, SDO1 à SDO4, FTO, FTP, FTS, FTW, FTT-G, `N_FUST` et `N_STRI` ?
-     Les agents s'en tiennent aux codes, sans en inventer le sens.
-   - `periode` est-elle une journée calendaire (00-24 h) ou une journée de production (06-06 h) ?
+   - quelles ressources de `indicators_day_label` appartiennent à Genk, et à quelles lignes ARMP
+     correspondent-elles ? (`RD79` est à Gueugnon.)
+   - quelle est la définition des sous-codes FTTE / FTTG / FTTI / FTTM, de `N_FUST` et de `N_STRI` ?
+   - où trouver les vitesses nominales (design speed), pour un vrai T2, et les produits bons / production
+     totale, pour un vrai T3 ?
+   - les données montrent que MTBF et MTTR sont calculés avec `N_FT`, et non avec `N_FUST`
+     (ex. 2015-10-28 : N_FT = 9, N_FUST = 8, MTTR = FT / 9). À confirmer.
 10. **Aciérie** : `Metal` désigne-t-il la coulée ou la brame sur EAF/AOD/CCS ? Comment se fait le lien
    brame → bobine noire après Châtelet ?
 

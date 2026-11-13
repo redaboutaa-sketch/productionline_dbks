@@ -382,10 +382,11 @@ INDICATORS_DDL = ", ".join(
     for c in INDICATOR_COLUMNS
 )
 # Synthetic resources only (the real codes, e.g. RD79, are mapped in reference/resource_map_gnk.csv).
-SYNTHETIC_RESOURCE_MAP: list[tuple[str, str, str]] = [
-    ("SYN_APL3", "GN-CR-APL3", "synthetic"), ("SYN_CRM2", "GN-CR-CRM2", "synthetic"),
-    ("SYN_APL2", "GN-CR-APL2", "synthetic"), ("SYN_BAL1", "GN-CR-BAL1", "synthetic"),
-    ("SYN_SLT2", "GN-RP-SLT2", "synthetic"),
+# (resource, site, line_armp, comment). SYN_GGN01 belongs to another site and must be filtered out.
+SYNTHETIC_RESOURCE_MAP: list[tuple[str, str, str | None, str]] = [
+    ("SYN_APL3", "GNK", "GN-CR-APL3", "synthetic"), ("SYN_CRM2", "GNK", "GN-CR-CRM2", "synthetic"),
+    ("SYN_APL2", "GNK", "GN-CR-APL2", "synthetic"), ("SYN_BAL1", "GNK", "GN-CR-BAL1", "synthetic"),
+    ("SYN_SLT2", "GNK", "GN-RP-SLT2", "synthetic"), ("SYN_GGN01", "GGN", None, "synthetic, other site"),
 ]
 
 
@@ -393,8 +394,9 @@ def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     """Daily rows of ``indicators_day_label`` for the synthetic resources, consistent with ``mm``.
 
     Time model (see sql/60_gold_gnk_time_model.sql): CT = SD_out + LT, LT = SDO3 + SDO4 + TS,
-    TS = FT + UOT + ROT. ROT comes from the coils' DurationROT, FT from the injected incidents plus
-    random failures, UOT from stops inside coils, SDO3 is the idle remainder (no material).
+    TS = FT + UOT + ROT (Aperam OEE DWH segmentation). ROT comes from the coils' DurationROT, FT from the
+    injected incidents plus random failures, UOT from stops inside coils, SDO3 (periodic maintenance, inside
+    LT) is a 4 h stop on some Wednesdays, and the idle remainder is booked as SDM (no material, outside LT).
     """
     rng = random.Random(seed)
     exe = mm[(mm.OperationStatus == "EXEC") & mm.DurationROT.notna()].copy()
@@ -406,14 +408,14 @@ def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     t1 = runs.EndDateTimeMachineSpecific.max().normalize()
     incidents = _incidents(min(runs.StartDateTimeMachineSpecific).to_pydatetime())
     out = []
-    for resource, armp, _ in SYNTHETIC_RESOURCE_MAP:
+    for resource, _site, line_armp, _ in SYNTHETIC_RESOURCE_MAP:
+        armp = line_armp or "GN-CR-APL3"
         lr = runs[runs.line == armp]
         for day in pd.date_range(t0, t1, freq="D"):
             d0, d1 = day.to_pydatetime(), (day + pd.Timedelta(days=1)).to_pydatetime()
             in_day = lr[(lr.EndDateTimeMachineSpecific > d0) & (lr.StartDateTimeMachineSpecific < d1)]
             ct = 86400.0
-            sdm = 4 * 3600.0 if (day.dayofweek == 2 and rng.random() < 0.5) else 0.0  # planned maintenance
-            lt = ct - sdm
+            sdo3 = 4 * 3600.0 if (day.dayofweek == 2 and rng.random() < 0.5) else 0.0  # periodic maintenance
             rot = float((in_day.DurationROT * 60).sum())
             busy = float(sum((min(e, d1) - max(s, d0)).total_seconds()
                              for s, e in zip(in_day.StartDateTimeMachineSpecific, in_day.EndDateTimeMachineSpecific)))
@@ -427,13 +429,15 @@ def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
             for f in fails:
                 fam[rng.choice(list(fam))] += f
             ft = sum(fam.values())
-            uot = max(0.0, busy - rot) + rng.uniform(0.02, 0.06) * lt
-            if rot + ft + uot > lt:  # keep the identities exact
-                scale = lt / (rot + ft + uot)
+            uot = max(0.0, busy - rot) + rng.uniform(0.02, 0.06) * ct
+            room = ct - sdo3
+            if rot + ft + uot > room:  # keep the identities exact
+                scale = room / (rot + ft + uot)
                 rot, ft, uot = rot * scale, ft * scale, uot * scale
                 fam = {k: v * scale for k, v in fam.items()}
-            sdo3 = lt - (rot + ft + uot)
-            ts = lt - sdo3
+            ts = rot + ft + uot
+            sdm = ct - sdo3 - ts  # idle with no material: scheduled downtime outside LT
+            lt = ct - sdm
             n_ft = n_rand + (1 if fail_inc else 0)
             ftt = fam["TE"] + fam["TG"] + fam["TI"] + fam["TM"]
 
@@ -441,7 +445,7 @@ def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
                 return (x / base) if base > 0 and x > 0 else None
 
             row = {
-                "periode": day.date(), "LT": lt, "T0": lt / ct, "FTdivCT": r_(ft, ct), "FTdivLT": r_(ft, lt),
+                "periode": day.date(), "LT": lt, "T0": lt / ct if ct else 0.0, "FTdivCT": r_(ft, ct), "FTdivLT": r_(ft, lt),
                 "FTdivTS": r_(ft, ts), "N_FUST": float(n_ft) or None, "FTFUSTdivLT": r_(ft, lt),
                 "FTOdivLT": r_(fam["O"], lt), "FTOdivTS": r_(fam["O"], ts), "FTPdivLT": r_(fam["P"], lt),
                 "FTPdivTS": r_(fam["P"], ts), "FTSdivLT": r_(fam["S"], lt), "FTSdivTS": r_(fam["S"], ts),
