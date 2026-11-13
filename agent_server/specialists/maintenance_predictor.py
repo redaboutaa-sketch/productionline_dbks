@@ -11,6 +11,8 @@ from databricks_langchain import ChatDatabricks
 from langchain.agents import create_agent
 from langchain_core.messages import SystemMessage
 
+from agent_server.aperam_gnk import is_gnk
+from agent_server.aperam_gnk.tools import gnk_specialist_tools
 from agent_server.model_roster import resolve
 from agent_server.optimizers.rul_estimator import estimate_rul
 from agent_server.prompts.loader import prompt_text
@@ -35,6 +37,8 @@ def create_maintenance_predictor():
         query_plant_docs,
         *governed_domain_tools("asset"),
     ]
+    if is_gnk():  # Aperam Genk mode: only tools backed by GNK data
+        tools = gnk_specialist_tools()
 
     return create_agent(
         model=llm,

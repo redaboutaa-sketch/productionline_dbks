@@ -65,12 +65,61 @@ def main() -> int:
         if n == 0:
             empty.append(obj)
     spark.sql("SELECT * FROM tgt.gold_gnk_wip_buffers ORDER BY tonnes_waiting DESC").show(10, False)
+    failures = _run_agent_sql(spark)
     spark.sql("SELECT line_armp, gap_start, gap_min FROM tgt.gold_gnk_line_gaps ORDER BY gap_min DESC").show(5, False)
     spark.stop()
     if empty:
         print("EMPTY:", ", ".join(empty))
-        return 1
-    return 0
+    return 1 if (empty or failures) else 0
+
+
+def _run_agent_sql(spark) -> int:
+    """Execute the GNK context builder and the four GNK tools against the local views.
+
+    Needs the agent-server dependencies (langchain...); skipped with a notice otherwise.
+    """
+    try:
+        import agent_server.context_builder as cb
+        from agent_server.aperam_gnk import context as gctx
+        from agent_server.aperam_gnk import tools as gtools
+    except ImportError as exc:
+        print(f"[agent SQL] skipped, agent-server deps missing: {exc}")
+        return 0
+
+    spark.sql("USE tgt")
+    errors: list[str] = []
+
+    def run(sql_text: str, params: dict, label: str = "") -> list[dict]:
+        lit = {k: "'" + str(v).replace("'", "''") + "'" for k, v in (params or {}).items()}
+        try:
+            return [r.asDict() for r in spark.sql(sql_text % lit if lit else sql_text).collect()]
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{label}: {str(exc).splitlines()[0][:200]}")
+            return []
+
+    cb._parameterized_query = run
+    ctx = gctx.build_gnk_context(None)
+    print(f"[agent SQL] context: shift={ctx['scenario']['shift_id']} lines={len(ctx['line_state'])} "
+          f"events={len(ctx['active_events'])} wip={len(ctx['wip_buffers'])} kpi={ctx['current_kpi']}")
+    for m in ctx["line_state"]:
+        if m["status"] != "running":
+            print(f"   {m['machine_id']:14s} {m['status']:9s} idle={m['idle_min']} waiting={m['coils_waiting']}")
+    for e in ctx["active_events"][:6]:
+        print(f"   EVENT {e['severity']:6s} {e['machine_id']} {e['event_type']}: {e['description'][:110]}")
+    status = gtools.gnk_line_status.invoke({"line_armp": "GN-CR-CRM2", "hours": 72})
+    print(f"[agent SQL] gnk_line_status CRM2: shifts={len(status['kpi_by_shift'])} stops={status['stops'][:1]}")
+    some_metal = (ctx["blocked_coils"] or [{"metal": None}])[0]["metal"]
+    if some_metal:
+        trace = gtools.gnk_coil_trace.invoke({"metal": some_metal})
+        print(f"[agent SQL] gnk_coil_trace {some_metal}: ops={len(trace['operations'])} "
+              f"sensor rows={len(trace['sensor_profile'])}")
+    scan = gtools.gnk_sensor_scan.invoke({"line_armp": "GN-CR-BAL1", "hours": 48})
+    print("[agent SQL] gnk_sensor_scan BAL1 top:", [(t["tag_id"], t["z_recent_vs_baseline"]) for t in scan["tags"][:3]])
+    flow = gtools.gnk_flow_overview.invoke({})
+    print("[agent SQL] gnk_flow_overview:", [(w["line_armp"], w["queue_cover_h"]) for w in flow["queues_in_flow_order"][:5]])
+    for e in errors:
+        print("[agent SQL] ERROR", e)
+    return len(errors)
 
 
 if __name__ == "__main__":

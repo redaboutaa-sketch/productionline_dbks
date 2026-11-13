@@ -22,6 +22,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -31,6 +32,7 @@ from src.aperam_gnk.assets import (
     ROUTES,
     SENSOR_TEMPLATES,
     SITE_FK_GNK,
+    SITE_TZ,
     Line,
 )
 
@@ -398,8 +400,8 @@ def generate(days: int = 3, start: datetime | None = None, coils_per_day: int = 
     """Return ``(metal_movements, timebased_sensor)`` DataFrames in the source schemas."""
     if start is None:
         # end the window "now" so ages, look-backs and current_timestamp() filters behave like live data
-        now = datetime.now().replace(minute=0, second=0, microsecond=0)
-        start = (now - timedelta(days=days)).replace(hour=6)
+        now = datetime.now(ZoneInfo(SITE_TZ)).replace(tzinfo=None, second=0, microsecond=0)
+        start = now - timedelta(days=days)
     g = _Generator(start, days, coils_per_day, seed)
     g.generate_steel_shop()
     g.generate_cold_side()

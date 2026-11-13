@@ -50,6 +50,9 @@ FIELD_TO_ENV = {
     "lakebase_pg_host": "PGHOST",
     "lakebase_endpoint": "LAKEBASE_ENDPOINT",
     "sim_shift_id": "SIM_SHIFT_ID",
+    # 'aperam_gnk' switches the agent to the Aperam Genk data (metal_movements /
+    # timebased_sensor gold layer) and prompts; empty keeps the upstream demo.
+    "copilot_domain": "COPILOT_DOMAIN",
     "genie_space_id": "GENIE_SPACE_ID",
     # Per-domain governed Genie spaces. Each specialist queries only the domain
     # it works in — see agent_server/tools/governed_domain_query.py. A domain

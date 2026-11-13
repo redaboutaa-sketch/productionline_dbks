@@ -10,6 +10,8 @@ from databricks_langchain import ChatDatabricks
 from langchain.agents import create_agent
 from langchain_core.messages import SystemMessage
 
+from agent_server.aperam_gnk import is_gnk
+from agent_server.aperam_gnk.tools import gnk_specialist_tools
 from agent_server.model_roster import resolve
 from agent_server.prompts.loader import prompt_text
 from agent_server.tools.anomaly_detector import detect_anomalies
@@ -36,6 +38,8 @@ def create_downtime_analyst():
         retrieve_similar_cases, detect_anomalies, query_plant_docs,
         *governed_domain_tools("asset"),
     ]
+    if is_gnk():  # Aperam Genk mode: only tools backed by GNK data
+        tools = gnk_specialist_tools()
 
     return create_agent(
         model=llm,

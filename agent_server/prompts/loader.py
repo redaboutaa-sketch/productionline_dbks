@@ -113,7 +113,18 @@ def _resolved() -> dict[str, str]:
 
 
 def prompt_text(slug: str) -> str:
-    """The text to send for ``slug``. Never empty, never raises on registry state."""
+    """The text to send for ``slug``. Never empty, never raises on registry state.
+
+    With ``COPILOT_DOMAIN=aperam_gnk`` the Aperam Genk prompt of the same slug wins
+    (same variables, same response contract; see ``agent_server.aperam_gnk.prompts``).
+    """
+    from agent_server.aperam_gnk import is_gnk
+
+    if is_gnk():
+        from agent_server.aperam_gnk.prompts import GNK_PROMPTS
+
+        if slug in GNK_PROMPTS:
+            return GNK_PROMPTS[slug]
     try:
         return _resolved()[slug]
     except KeyError:

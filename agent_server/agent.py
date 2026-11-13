@@ -59,6 +59,9 @@ from langchain_core.messages import (
     ToolMessage,
 )
 
+from agent_server.aperam_gnk import is_gnk
+from agent_server.aperam_gnk.context import build_gnk_context, gnk_trim_slices
+from agent_server.aperam_gnk.tools import GNK_TOOL_DISPLAY_NAMES
 from agent_server.context_builder import build_context
 from agent_server.events import active_events, context_now_ts, shift_progress, to_epoch
 from agent_server.llm_output import message_text
@@ -98,6 +101,19 @@ activate_logged_model()
 # See agent_server/model_roster.py.
 _ROUTER_ROLE = "intent_router"
 _GENERAL_ROLE = "general"
+
+
+def _build_domain_context(shift_id: str, timestamp: str, machine_id: str | None) -> dict:
+    """Context for the active domain.
+
+    Aperam Genk mode (``COPILOT_DOMAIN=aperam_gnk``) reads the GNK gold layer over
+    metal_movements / timebased_sensor; otherwise the upstream UC bundle plus the live
+    Lakebase overlay of the bottling-line simulator.
+    """
+    if is_gnk():
+        return build_gnk_context(shift_id, timestamp, machine_id)
+    context = build_context(shift_id, timestamp, machine_id)
+    return _overlay_live_state(context, shift_id)
 
 
 def _overlay_live_state(context: dict, shift_id: str | None = None) -> dict:
@@ -491,7 +507,10 @@ def _quick_snapshot(context: dict, query: str = "") -> str:
                      f"P: {float(kpi.get('performance_to_now') or 0):.1f}% · "
                      f"Q: {float(kpi.get('quality_to_now') or 0):.1f}%")
 
-    actual = kpi.get("cumulative_cases")
+    if context.get("domain") == "aperam_gnk":
+        parts.extend(_gnk_snapshot_lines(context, kpi))
+
+    actual = None if context.get("domain") == "aperam_gnk" else kpi.get("cumulative_cases")
     planned = plan.get("planned_cases")
     if actual is not None and planned and int(planned) > 0:
         a, p = int(actual), int(planned)
@@ -532,6 +551,24 @@ def _quick_snapshot(context: dict, query: str = "") -> str:
         parts.append(f"  Time remaining: **{int(remaining)} min**")
 
     return "\n".join(parts)
+
+
+def _gnk_snapshot_lines(context: dict, kpi: dict) -> list[str]:
+    """Genk-specific snapshot lines: tonnes, biggest queue, holds. Pure formatting."""
+    lines = []
+    if kpi.get("tonnes_processed_cold_side") is not None or kpi.get("tonnes_packed") is not None:
+        lines.append(f"  Tonnes this shift: cold side **{float(kpi.get('tonnes_processed_cold_side') or 0):,.0f} t** "
+                     f"processed, **{float(kpi.get('tonnes_packed') or 0):,.0f} t** packed")
+    wip = context.get("wip_buffers") or []
+    if wip:
+        top = max(wip, key=lambda w: float(w.get("tonnes_waiting") or 0))
+        lines.append(f"  Biggest queue: **{top.get('line_armp')}** — {int(top.get('coils_waiting') or 0)} coils, "
+                     f"{float(top.get('tonnes_waiting') or 0):,.0f} t waiting")
+    blocked = context.get("blocked_coils") or []
+    if blocked:
+        tonnes = sum(float(c.get("weight_t") or 0) for c in blocked)
+        lines.append(f"  Quality holds: **{len(blocked)} coil(s)**, {tonnes:,.0f} t on BLOQ")
+    return lines
 
 
 def _trim_context(context: dict, specialist_name: str) -> dict:
@@ -608,6 +645,9 @@ def _trim_context(context: dict, specialist_name: str) -> dict:
             for inc in active_incidents[:5]
         ]
 
+    if is_gnk():
+        slim.update(gnk_trim_slices(context, specialist_name))
+
     history = context.get("conversation_history")
     if history:
         slim["conversation_history"] = history[-4:]
@@ -636,6 +676,7 @@ TOOL_DISPLAY_NAMES = {
     "governed_quality_query": "Asking the governed quality domain",
     "governed_inventory_query": "Asking the governed inventory domain",
     "governed_production_query": "Asking the governed production domain",
+    **GNK_TOOL_DISPLAY_NAMES,
 }
 
 # Past tense for the verb each label opens with. Spelled out because English
@@ -653,6 +694,10 @@ _PAST_TENSE = {
     "Querying": "Queried",
     "Running": "Ran",
     "Searching": "Searched",
+    # Aperam GNK tools
+    "Reading": "Read",
+    "Scanning": "Scanned",
+    "Tracing": "Traced",
     # The fallback label for a tool with no display name of its own.
     "Using": "Used",
 }
@@ -1379,8 +1424,7 @@ def invoke(
 
     recent_history = _conversation_store.load_history(conversation_id, limit=6)
 
-    context = build_context(shift_id, timestamp, machine_id)
-    context = _overlay_live_state(context, shift_id)
+    context = _build_domain_context(shift_id, timestamp, machine_id)
 
     snapshot = _quick_snapshot(context, query)
 
@@ -1457,8 +1501,7 @@ def invoke_stream(
     _conversation_store.save_message(conversation_id, "user", query, {"shift_id": shift_id, "timestamp": timestamp})
     recent_history = _conversation_store.load_history(conversation_id, limit=6)
 
-    context = build_context(shift_id, timestamp, machine_id)
-    context = _overlay_live_state(context, shift_id)
+    context = _build_domain_context(shift_id, timestamp, machine_id)
 
     snapshot = _quick_snapshot(context, query)
 

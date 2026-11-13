@@ -53,6 +53,6 @@ FROM {tgt}.gold_gnk_coil_ops c
 JOIN {tgt}.gnk_sensor s
   ON s.armp_l3 = c.armp_l3
  AND s.ts BETWEEN c.ts_start AND c.ts_end
-WHERE c.ts_end >= current_timestamp() - INTERVAL {sensor_lookback_days} DAYS
-  AND s.ts     >= current_timestamp() - INTERVAL {sensor_lookback_days} DAYS
+WHERE c.ts_end >= {now_local} - INTERVAL {sensor_lookback_days} DAYS
+  AND s.ts     >= {now_local} - INTERVAL {sensor_lookback_days} DAYS
 GROUP BY c.metal, c.line_armp, c.ts_start, c.ts_end, c.grade, c.thickness_mm, s.tag_id;

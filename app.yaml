@@ -110,6 +110,8 @@ env:
     value: 'SET_ME'
   - name: OPS_DATA_QUALITY_DASHBOARD_ID
     value: 'SET_ME'
+  - name: COPILOT_DOMAIN
+    value: 'aperam_gnk'
   - name: SIM_SHIFT_ID
     value: 'shift_1'
   - name: SSE_POLL_SECONDS

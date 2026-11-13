@@ -31,6 +31,8 @@ from pathlib import Path
 SITE_FK_GNK = 3
 SITE_CODE = "GN"
 SITE_NAME = "Aperam Genk"
+# metal_movements / timebased_sensor carry LOCAL site time; SQL compares them to this clock.
+SITE_TZ = "Europe/Brussels"
 
 _REFERENCE_DIR = Path(__file__).parent / "reference"
 MAPPING_CSV = _REFERENCE_DIR / "armp_machine_mapping_gnk.csv"

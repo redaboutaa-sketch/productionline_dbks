@@ -33,7 +33,7 @@ SELECT
        WHEN l.stage >= 100 THEN 'finished'
        WHEN l.workshop = 'ST' THEN 'to_hot_rolling'
        ELSE 'unplanned' END                                  AS position_state,
-  round(timestampdiff(MINUTE, l.ts_end, current_timestamp()) / 60.0, 1) AS age_h
+  round(timestampdiff(MINUTE, l.ts_end, {now_local}) / 60.0, 1) AS age_h
 FROM last_exec l
 LEFT JOIN pending p ON p.metal = l.metal AND p.rn = 1
 WHERE l.rn = 1;

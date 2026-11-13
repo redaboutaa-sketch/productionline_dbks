@@ -75,6 +75,6 @@ SELECT
   percentile_approx(throughput_t_per_rot_h, 0.9)           AS p90_t_per_h,
   percentile_approx(speed_realised_m_min, 0.9)             AS p90_speed_m_min
 FROM {tgt}.gold_gnk_coil_ops
-WHERE ts_end >= current_timestamp() - INTERVAL 90 DAYS
+WHERE ts_end >= {now_local} - INTERVAL 90 DAYS
   AND throughput_t_per_rot_h IS NOT NULL
 GROUP BY 1, 2;

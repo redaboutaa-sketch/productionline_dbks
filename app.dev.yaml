@@ -111,6 +111,8 @@ env:
   # bundle-targets.yaml from project-settings.yaml::line_manager_dev.sim_shift_id).
   # Lakebase ai_serving.*_history is shared with prod, so a unique
   # shift_id is the only thing keeping dev rows out of prod's cursor.
+  - name: COPILOT_DOMAIN
+    value: 'aperam_gnk'
   - name: SIM_SHIFT_ID
     value: 'shift_1_dev'
   - name: SSE_POLL_SECONDS

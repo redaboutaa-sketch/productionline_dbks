@@ -159,6 +159,10 @@ def governed_domain_tool(domain: str) -> BaseTool | None:
 
 def governed_domain_tools(*domains: str) -> list[BaseTool]:
     """Tools for the given domains, skipping any that are unprovisioned."""
+    from agent_server.aperam_gnk import is_gnk
+
+    if is_gnk():  # the governed MVM spaces describe the upstream demo, not Genk
+        return []
     built = (governed_domain_tool(d) for d in domains)
     return [t for t in built if t is not None]
 
@@ -172,7 +176,9 @@ def governed_domain_prompt(domain: str) -> str:
     an import-time constant so it always matches the tool list actually handed
     to the model.
     """
-    if not domain_space_id(domain):
+    from agent_server.aperam_gnk import is_gnk
+
+    if is_gnk() or not domain_space_id(domain):
         return ""
     return prompt_text("governed_domain_suffix").format(
         domain=domain,

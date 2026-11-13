@@ -26,6 +26,7 @@ from pathlib import Path
 from src.aperam_gnk.assets import (
     LINES,
     SENSOR_TEMPLATES,
+    SITE_TZ,
     load_machine_mapping,
     machine_to_line,
 )
@@ -125,6 +126,11 @@ def _split_statements(sql: str) -> Iterator[str]:
             yield body
 
 
+def now_local_sql(tz: str = SITE_TZ) -> str:
+    """'Now' in site local time. Source timestamps are local, the warehouse clock is UTC."""
+    return f"from_utc_timestamp(current_timestamp(), '{tz}')"
+
+
 def render_statements(src: str, tgt: str, sensor_lookback_days: int = 30,
                       include_reference: bool = True) -> list[str]:
     for ident in (src, tgt):
@@ -133,7 +139,7 @@ def render_statements(src: str, tgt: str, sensor_lookback_days: int = 30,
     stmts = reference_statements(tgt) if include_reference else []
     for path in sorted(SQL_DIR.glob("*.sql")):
         text = path.read_text(encoding="utf-8").format(
-            src=src, tgt=tgt, sensor_lookback_days=int(sensor_lookback_days)
+            src=src, tgt=tgt, sensor_lookback_days=int(sensor_lookback_days), now_local=now_local_sql()
         )
         stmts.extend(_split_statements(text))
     return stmts

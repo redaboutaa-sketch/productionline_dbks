@@ -166,7 +166,10 @@ class TestTheOverlayReadsTheShiftTheCallerAsked_About:
         import inspect
 
         src = inspect.getsource(agent)
-        assert src.count("_overlay_live_state(context, shift_id)") == 2, (
+        # Both entry points go through _build_domain_context (upstream overlay or
+        # Aperam GNK context), which forwards the shift it was given.
+        assert src.count("_build_domain_context(shift_id, timestamp, machine_id)") == 2, (
             "invoke() and invoke_stream() must both forward their shift_id"
         )
+        assert src.count("_overlay_live_state(context, shift_id)") == 1
         assert "_overlay_live_state(context)\n" not in src

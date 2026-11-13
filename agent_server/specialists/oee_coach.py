@@ -12,6 +12,8 @@ from databricks_langchain import ChatDatabricks
 from langchain.agents import create_agent
 from langchain_core.messages import SystemMessage
 
+from agent_server.aperam_gnk import is_gnk
+from agent_server.aperam_gnk.tools import gnk_specialist_tools
 from agent_server.model_roster import resolve
 from agent_server.optimizers.oee_loss_prioritizer import oee_loss_analysis
 from agent_server.optimizers.production_forecaster import production_forecast
@@ -34,6 +36,8 @@ def create_oee_coach():
         oee_loss_analysis, production_forecast,
         *governed_domain_tools("production"),
     ]
+    if is_gnk():  # Aperam Genk mode: only tools backed by GNK data
+        tools = gnk_specialist_tools()
 
     return create_agent(
         model=llm,
