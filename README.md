@@ -1,5 +1,10 @@
 # ProdLine CoPilot: Real-Time Streaming Edition
 
+> **Aperam Genk (GNK) adaptation** — this fork runs the copilot on Aperam Genk data (`metal_movements`,
+> `timebased_sensor`, ARMP tree) when `COPILOT_DOMAIN=aperam_gnk`. See
+> [`docs/aperam/README_GNK.md`](docs/aperam/README_GNK.md) (in French) for what changed, how to deploy it and
+> the open data questions.
+
 [![Databricks](https://img.shields.io/badge/Databricks-Solution_Accelerator-FF3621?style=for-the-badge&logo=databricks)](https://databricks.com)
 [![Unity Catalog](https://img.shields.io/badge/Unity_Catalog-Enabled-00A1C9?style=for-the-badge)](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
 [![Serverless](https://img.shields.io/badge/Serverless-Compute-00C851?style=for-the-badge)](https://docs.databricks.com/en/compute/serverless.html)
