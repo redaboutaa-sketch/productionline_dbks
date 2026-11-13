@@ -20,7 +20,7 @@ import heapq
 import math
 import random
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,6 +34,7 @@ from src.aperam_gnk.assets import (
     SITE_FK_GNK,
     SITE_TZ,
     Line,
+    machine_to_line,
 )
 
 METAL_MOVEMENTS_COLUMNS: list[str] = [
@@ -369,6 +370,98 @@ class _Generator:
         return pd.DataFrame(out, columns=TIMEBASED_SENSOR_COLUMNS)
 
 
+INDICATOR_COLUMNS: list[str] = (
+    "periode LT T0 FTdivCT FTdivLT FTdivTS N_FUST FTFUSTdivLT FTOdivLT FTOdivTS FTPdivLT FTPdivTS FTSdivLT FTSdivTS "
+    "FTTdivLT FTTdivTS FTTEdivTS FTTGdivTS FTTIdivTS FTTMdivTS FTWdivLT FTWdivTS N_FT MTBF MTTR N_COIL N_STRI ROTdivTS "
+    "SDCdivCT SDdivCT SDEdivCT SDMdivCT SDO1divCT SDO2divCT SDO3plus4 SDO3plus4divLT SDO3divCT SDO3divLT SDO4divCT "
+    "SDO4divLT SDOdivCT SDPdivCT SDPdivLT T1 TSdivCT UOTdivLT UOTdivTS resource _ingested_at _input_file_name "
+    "_file_arrival_time"
+).split()
+INDICATORS_DDL = ", ".join(
+    f"{c} {'date' if c == 'periode' else 'string' if c in ('resource', '_input_file_name') else 'timestamp' if c in ('_ingested_at', '_file_arrival_time') else 'double'}"
+    for c in INDICATOR_COLUMNS
+)
+# Synthetic resources only (the real codes, e.g. RD79, are mapped in reference/resource_map_gnk.csv).
+SYNTHETIC_RESOURCE_MAP: list[tuple[str, str, str]] = [
+    ("SYN_APL3", "GN-CR-APL3", "synthetic"), ("SYN_CRM2", "GN-CR-CRM2", "synthetic"),
+    ("SYN_APL2", "GN-CR-APL2", "synthetic"), ("SYN_BAL1", "GN-CR-BAL1", "synthetic"),
+    ("SYN_SLT2", "GN-RP-SLT2", "synthetic"),
+]
+
+
+def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
+    """Daily rows of ``indicators_day_label`` for the synthetic resources, consistent with ``mm``.
+
+    Time model (see sql/60_gold_gnk_time_model.sql): CT = SD_out + LT, LT = SDO3 + SDO4 + TS,
+    TS = FT + UOT + ROT. ROT comes from the coils' DurationROT, FT from the injected incidents plus
+    random failures, UOT from stops inside coils, SDO3 is the idle remainder (no material).
+    """
+    rng = random.Random(seed)
+    exe = mm[(mm.OperationStatus == "EXEC") & mm.DurationROT.notna()].copy()
+    exe["line"] = exe.Machine.map({k: v.armp for k, v in machine_to_line().items()})
+    runs = exe.drop_duplicates(["Metal", "line", "StartDateTimeMachineSpecific"])
+    if runs.empty:
+        return pd.DataFrame(columns=INDICATOR_COLUMNS)
+    t0 = runs.StartDateTimeMachineSpecific.min().normalize()
+    t1 = runs.EndDateTimeMachineSpecific.max().normalize()
+    incidents = _incidents(min(runs.StartDateTimeMachineSpecific).to_pydatetime())
+    out = []
+    for resource, armp, _ in SYNTHETIC_RESOURCE_MAP:
+        lr = runs[runs.line == armp]
+        for day in pd.date_range(t0, t1, freq="D"):
+            d0, d1 = day.to_pydatetime(), (day + pd.Timedelta(days=1)).to_pydatetime()
+            in_day = lr[(lr.EndDateTimeMachineSpecific > d0) & (lr.StartDateTimeMachineSpecific < d1)]
+            ct = 86400.0
+            sdm = 4 * 3600.0 if (day.dayofweek == 2 and rng.random() < 0.5) else 0.0  # planned maintenance
+            lt = ct - sdm
+            rot = float((in_day.DurationROT * 60).sum())
+            busy = float(sum((min(e, d1) - max(s, d0)).total_seconds()
+                             for s, e in zip(in_day.StartDateTimeMachineSpecific, in_day.EndDateTimeMachineSpecific)))
+            rot = min(rot, busy)
+            fail_inc = sum(max(0.0, (min(i.end, d1) - max(i.start, d0)).total_seconds())
+                           for i in incidents if i.line_armp == armp and i.code.endswith("BREAKDOWN"))
+            n_rand = rng.randint(0, 4)
+            fails = [rng.uniform(300, 2400) for _ in range(n_rand)]
+            fam = {k: 0.0 for k in ("O", "P", "S", "TE", "TG", "TI", "TM", "W")}
+            fam["TM"] += fail_inc
+            for f in fails:
+                fam[rng.choice(list(fam))] += f
+            ft = sum(fam.values())
+            uot = max(0.0, busy - rot) + rng.uniform(0.02, 0.06) * lt
+            if rot + ft + uot > lt:  # keep the identities exact
+                scale = lt / (rot + ft + uot)
+                rot, ft, uot = rot * scale, ft * scale, uot * scale
+                fam = {k: v * scale for k, v in fam.items()}
+            sdo3 = lt - (rot + ft + uot)
+            ts = lt - sdo3
+            n_ft = n_rand + (1 if fail_inc else 0)
+            ftt = fam["TE"] + fam["TG"] + fam["TI"] + fam["TM"]
+
+            def r_(x, base):
+                return (x / base) if base > 0 and x > 0 else None
+
+            row = {
+                "periode": day.date(), "LT": lt, "T0": lt / ct, "FTdivCT": r_(ft, ct), "FTdivLT": r_(ft, lt),
+                "FTdivTS": r_(ft, ts), "N_FUST": float(n_ft) or None, "FTFUSTdivLT": r_(ft, lt),
+                "FTOdivLT": r_(fam["O"], lt), "FTOdivTS": r_(fam["O"], ts), "FTPdivLT": r_(fam["P"], lt),
+                "FTPdivTS": r_(fam["P"], ts), "FTSdivLT": r_(fam["S"], lt), "FTSdivTS": r_(fam["S"], ts),
+                "FTTdivLT": r_(ftt, lt), "FTTdivTS": r_(ftt, ts), "FTTEdivTS": r_(fam["TE"], ts),
+                "FTTGdivTS": r_(fam["TG"], ts), "FTTIdivTS": r_(fam["TI"], ts), "FTTMdivTS": r_(fam["TM"], ts),
+                "FTWdivLT": r_(fam["W"], lt), "FTWdivTS": r_(fam["W"], ts), "N_FT": float(n_ft) or None,
+                "MTBF": (ts / n_ft) if n_ft else None, "MTTR": (ft / n_ft) if n_ft else None,
+                "N_COIL": float(len(in_day)) or None, "N_STRI": float(rng.randint(0, 6)), "ROTdivTS": r_(rot, ts),
+                "SDCdivCT": None, "SDdivCT": r_(sdm + sdo3, ct), "SDEdivCT": None, "SDMdivCT": r_(sdm, ct),
+                "SDO1divCT": None, "SDO2divCT": None, "SDO3plus4": sdo3 or None, "SDO3plus4divLT": r_(sdo3, lt),
+                "SDO3divCT": r_(sdo3, ct), "SDO3divLT": r_(sdo3, lt), "SDO4divCT": None, "SDO4divLT": None,
+                "SDOdivCT": r_(sdo3, ct), "SDPdivCT": None, "SDPdivLT": None, "T1": rot / lt if lt else 0.0,
+                "TSdivCT": r_(ts, ct), "UOTdivLT": r_(uot, lt), "UOTdivTS": r_(uot, ts), "resource": resource,
+                "_ingested_at": datetime.now(), "_input_file_name": "synthetic/INDICATORS_DAY.parquet",
+                "_file_arrival_time": datetime.now(),
+            }
+            out.append(row)
+    return pd.DataFrame(out, columns=INDICATOR_COLUMNS)
+
+
 def to_spark_rows(df: pd.DataFrame, ddl: str) -> list[tuple]:
     """Convert a generated DataFrame to Python rows matching ``ddl`` (None for nulls, Decimal for decimals)."""
     from decimal import Decimal
@@ -384,6 +477,10 @@ def to_spark_rows(df: pd.DataFrame, ddl: str) -> list[tuple]:
             conv.append(lambda v: int(v))
         elif typ == "timestamp":
             conv.append(lambda v: v.to_pydatetime() if hasattr(v, "to_pydatetime") else v)
+        elif typ == "double":
+            conv.append(lambda v: float(v))
+        elif typ == "date":
+            conv.append(lambda v: v.date() if hasattr(v, "date") and not isinstance(v, date) else v)
         elif typ == "boolean":
             conv.append(lambda v: bool(v))
         else:
@@ -425,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         args.out.mkdir(parents=True, exist_ok=True)
         mm.to_parquet(args.out / "metal_movements.parquet", index=False)
         sensors.to_parquet(args.out / "timebased_sensor.parquet", index=False)
+        generate_indicators(mm, seed=args.seed).to_parquet(args.out / "indicators_day_label.parquet", index=False)
         print(f"written to {args.out}")
     if args.uc_target:
         from pyspark.sql import SparkSession
@@ -432,6 +530,9 @@ def main(argv: list[str] | None = None) -> int:
         spark = SparkSession.builder.getOrCreate()
         spark.createDataFrame(to_spark_rows(mm, METAL_MOVEMENTS_DDL), METAL_MOVEMENTS_DDL).write.mode("overwrite").option("overwriteSchema", "true") \
             .saveAsTable(f"{args.uc_target}.metal_movements")
+        ind = generate_indicators(mm, seed=args.seed)
+        spark.createDataFrame(to_spark_rows(ind, INDICATORS_DDL), INDICATORS_DDL).write.mode("overwrite") \
+            .option("overwriteSchema", "true").saveAsTable(f"{args.uc_target}.indicators_day_label")
         spark.createDataFrame(to_spark_rows(sensors, TIMEBASED_SENSOR_DDL), TIMEBASED_SENSOR_DDL).write.mode("overwrite").option("overwriteSchema", "true") \
             .saveAsTable(f"{args.uc_target}.timebased_sensor")
         print(f"Delta tables written to {args.uc_target}")

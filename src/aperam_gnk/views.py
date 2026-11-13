@@ -56,7 +56,21 @@ def _values_table(target: str, columns: list[tuple[str, str]], rows: Iterable[tu
     )
 
 
-def reference_statements(tgt: str) -> list[str]:
+RESOURCE_MAP_CSV = Path(__file__).parent / "reference" / "resource_map_gnk.csv"
+DEFAULT_INDICATORS_TABLE = "dev_weu_next_best_action.raw.indicators_day_label"
+TIME_MODEL_SQL = "60_gold_gnk_time_model.sql"
+
+
+def load_resource_map(path: Path = RESOURCE_MAP_CSV) -> list[tuple[str, str | None, str | None]]:
+    """indicators_day_label.resource -> ARMP line (blank line_armp = not mapped yet)."""
+    import csv
+
+    with path.open(encoding="utf-8") as fh:
+        return [(r["resource"].strip(), (r.get("line_armp") or "").strip() or None, (r.get("comment") or "").strip() or None)
+                for r in csv.DictReader(fh) if r.get("resource", "").strip()]
+
+
+def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | None, str | None]] | None = None) -> list[str]:
     """CREATE TABLE statements for the reference data owned by assets.py."""
     registry = _values_table(
         f"{tgt}.gnk_line_registry",
@@ -114,7 +128,12 @@ def reference_statements(tgt: str) -> list[str]:
         ],
         tag_rows,
     )
-    return [registry, mapping, tags]
+    resource_map = _values_table(
+        f"{tgt}.gnk_resource_map",
+        [("resource", "STRING"), ("line_armp", "STRING"), ("comment", "STRING")],
+        [*load_resource_map(), *(extra_resource_map or [])],
+    )
+    return [registry, mapping, tags, resource_map]
 
 
 def _split_statements(sql: str) -> Iterator[str]:
@@ -132,14 +151,20 @@ def now_local_sql(tz: str = SITE_TZ) -> str:
 
 
 def render_statements(src: str, tgt: str, sensor_lookback_days: int = 30,
-                      include_reference: bool = True) -> list[str]:
-    for ident in (src, tgt):
+                      include_reference: bool = True, indicators: str | None = DEFAULT_INDICATORS_TABLE,
+                      extra_resource_map: list[tuple[str, str | None, str | None]] | None = None) -> list[str]:
+    """All statements in dependency order. ``indicators`` = fully qualified daily OEE indicators table
+    (``None`` skips the time-model views)."""
+    for ident in (src, tgt, indicators or "x.y"):
         if not _IDENT.match(ident):
             raise ValueError(f"invalid catalog.schema identifier: {ident!r}")
-    stmts = reference_statements(tgt) if include_reference else []
+    stmts = reference_statements(tgt, extra_resource_map) if include_reference else []
     for path in sorted(SQL_DIR.glob("*.sql")):
+        if path.name == TIME_MODEL_SQL and not indicators:
+            continue
         text = path.read_text(encoding="utf-8").format(
-            src=src, tgt=tgt, sensor_lookback_days=int(sensor_lookback_days), now_local=now_local_sql()
+            src=src, tgt=tgt, sensor_lookback_days=int(sensor_lookback_days), now_local=now_local_sql(),
+            indicators=indicators,
         )
         stmts.extend(_split_statements(text))
     return stmts
@@ -151,10 +176,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tgt", required=True, help="catalog.schema read by the copilot")
     ap.add_argument("--warehouse-id", help="SQL warehouse id (required unless --dry-run)")
     ap.add_argument("--sensor-lookback-days", type=int, default=30)
+    ap.add_argument("--indicators", default=DEFAULT_INDICATORS_TABLE,
+                    help="catalog.schema.table of the daily OEE indicators ('' to skip the time model)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
-    stmts = render_statements(args.src, args.tgt, args.sensor_lookback_days)
+    stmts = render_statements(args.src, args.tgt, args.sensor_lookback_days, indicators=args.indicators or None)
     if args.dry_run:
         print(";\n\n".join(stmts) + ";")
         return 0

@@ -19,6 +19,8 @@ plus GNK-only slices that ``gnk_trim_slices`` hands to the specialists:
     recent_gaps     closed stops (gaps between coils) over the last 24 h
     sensor_alerts   tags out of range while producing, last 8 h
     line_kpi_7d     per-line shift KPIs over the last 7 days (baseline for comparisons)
+    oee_days_7d     official daily OEE (time model of indicators_day_label x speed x yield), 7 days
+    time_losses_7d  biggest time losses over 7 days (scheduled, organisational, failures, UOT)
 """
 
 from __future__ import annotations
@@ -150,6 +152,23 @@ def _queries(shift_date: date, shift_name: str, now: datetime) -> dict[str, tupl
             " GROUP BY h.armp_l3, h.tag_id, t.description, t.unit, t.range_lower_limit, t.range_upper_limit"
             " HAVING sum(h.out_of_range_nonzero) > 0 ORDER BY out_of_range DESC LIMIT 20",
             {"since": (now - timedelta(hours=8)).isoformat(sep=" ")}, "gnk_sensor_alerts",
+        ),
+        "oee_days": (
+            "SELECT resource, line_armp, line_name, prod_date, round(oee, 3) AS oee,"
+            " round(t1_rot_over_lt, 3) AS t1_rot_over_lt, round(t0_loading_rate, 3) AS t0_loading_rate,"
+            " round(availability_ts, 3) AS availability_ts, round(speed_ratio, 3) AS speed_ratio,"
+            " round(yield, 4) AS yield, round(loading_h, 1) AS loading_h, round(rot_h, 1) AS rot_h,"
+            " round(failure_h, 1) AS failure_h, round(unproductive_h, 1) AS unproductive_h,"
+            " round(organisational_h, 1) AS organisational_h, n_failures, round(mtbf_h, 1) AS mtbf_h,"
+            " round(mttr_min) AS mttr_min, n_coils"
+            " FROM gold_gnk_oee_day WHERE prod_date >= %(d7)s ORDER BY line_armp, prod_date",
+            {"d7": (shift_date - timedelta(days=7)).isoformat()}, "gnk_oee_days",
+        ),
+        "losses_7d": (
+            "SELECT line_armp, resource, level, loss_code, round(sum(loss_h), 1) AS loss_h"
+            " FROM gold_gnk_time_losses_day WHERE prod_date >= %(d7)s"
+            " GROUP BY line_armp, resource, level, loss_code ORDER BY loss_h DESC LIMIT 15",
+            {"d7": (shift_date - timedelta(days=7)).isoformat()}, "gnk_losses_7d",
         ),
         "registry": (
             "SELECT line_armp, line_name, workshop, stage, kind, machine_codes, width_min_mm, width_max_mm,"
@@ -370,6 +389,9 @@ def build_gnk_context(shift_id: str | None, timestamp: str | None = None, machin
         "sensor_alerts": rows["sensor_alerts"],
         "line_kpi_shift": rows["kpi"] or rows["kpi_prev"],
         "line_kpi_7d": rows["kpi_7d"],
+        # official time-model OEE (daily indicators table), last 7 days, and its biggest losses
+        "oee_days_7d": rows["oee_days"],
+        "time_losses_7d": rows["losses_7d"],
         "active_incidents": [],
     }
     if machine_id:
@@ -392,6 +414,10 @@ def gnk_trim_slices(context: dict, specialist_name: str) -> dict:
     if specialist_name in ("oee_coach", "strategic_advisor", "schedule_optimizer", "shift_briefing"):
         out["line_kpi_shift"] = context.get("line_kpi_shift", [])[:25]
         out["line_kpi_7d"] = context.get("line_kpi_7d", [])[:25]
+    if specialist_name in ("oee_coach", "strategic_advisor", "maintenance_predictor", "downtime_analyst",
+                           "shift_briefing"):
+        out["oee_days_7d"] = context.get("oee_days_7d", [])[:40]
+        out["time_losses_7d"] = context.get("time_losses_7d", [])[:10]
     if specialist_name in ("schedule_optimizer", "supply_chain_advisor", "strategic_advisor"):
         out["line_state"] = context.get("line_state", [])
     return out

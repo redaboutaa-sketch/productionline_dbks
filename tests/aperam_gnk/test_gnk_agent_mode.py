@@ -51,7 +51,7 @@ def test_gnk_prompts_cover_every_specialist_and_keep_template_variables():
 
 def test_gnk_prompts_name_only_gnk_tables():
     text = "\n".join(GNK_PROMPTS.values())
-    assert "gold_gnk_wip_buffers" in text and "gnk_movements" in text
+    assert "gold_gnk_wip_buffers" in text and "gnk_movements" in text and "gold_gnk_oee_day" in text
     # bottling-line tables may only appear in the explicit 'do not use' warning
     for dead in ("gold_history_machine_state", "quality_checks_bronze", "machine_bom"):
         assert dead not in text
@@ -143,7 +143,7 @@ def test_active_events_are_open_and_ranked():
 def test_build_gnk_context_end_to_end(monkeypatch):
     kpi, wip, on_line, last, alerts, blocked = _rows()
     fake = {"kpi": kpi, "kpi_prev": [], "kpi_7d": [], "wip": wip, "on_line": on_line, "blocked": blocked,
-            "last_activity": last, "gaps": [], "sensor_alerts": alerts, "registry": [{"line_armp": "GN-CR-APL3"}]}
+            "last_activity": last, "gaps": [], "sensor_alerts": alerts, "oee_days": [{"line_armp": "GN-CR-CRM2", "oee": 0.6}], "losses_7d": [], "registry": [{"line_armp": "GN-CR-APL3"}]}
     import agent_server.context_builder as cb
 
     monkeypatch.setattr(cb, "_parallel_param_queries", lambda queries: {k: fake[k] for k in queries})
@@ -155,6 +155,7 @@ def test_build_gnk_context_end_to_end(monkeypatch):
     assert ctx["current_kpi"]["oee_to_now"] > 0
     assert ctx["active_events"]
     assert ctx["current_kpi"]["kpi_scope"] == "current shift"
+    assert ctx["oee_days_7d"][0]["oee"] == 0.6
 
 
 def test_kpi_rescaled_to_elapsed_time_for_a_shift_in_progress():
@@ -199,6 +200,21 @@ def test_tools_validate_inputs():
     assert "error" in gnk_line_status.invoke({"line_armp": "BUL3; DROP TABLE x"})
     assert "error" in gnk_sensor_scan.invoke({"line_armp": "nope"})
     assert "error" in gnk_coil_trace.invoke({"metal": "x' OR 1=1 --"})
+    from agent_server.aperam_gnk.tools import gnk_oee_report
+
+    assert "error" in gnk_oee_report.invoke({"line_or_resource": "RD79' --"})
+
+
+def test_oee_report_accepts_armp_or_resource(monkeypatch):
+    from agent_server.aperam_gnk import tools
+
+    seen = []
+    monkeypatch.setattr(tools, "_q", lambda sql, params, label: seen.append((sql, params)) or [])
+    tools.gnk_oee_report.invoke({"line_or_resource": "GN-CR-CRM2", "days": 7})
+    assert "line_armp = %(k)s" in seen[0][0] and seen[0][1]["k"] == "GN-CR-CRM2"
+    seen.clear()
+    tools.gnk_oee_report.invoke({"line_or_resource": "RD79"})
+    assert "resource = %(k)s" in seen[0][0] and seen[0][1]["k"] == "RD79"
 
 
 def test_flow_overview_computes_queue_cover(monkeypatch):
@@ -227,7 +243,7 @@ def test_specialists_get_gnk_tools_only_in_gnk_mode(monkeypatch, gnk_mode):
     da.create_downtime_analyst()
     names = {t.name for t in captured["tools"]}
     assert names == {"sql_query", "calculator", "gnk_line_status", "gnk_coil_trace", "gnk_sensor_scan",
-                     "gnk_flow_overview"}
+                     "gnk_flow_overview", "gnk_oee_report"}
     assert "Aperam Genk" in captured["system_prompt"].content
 
 

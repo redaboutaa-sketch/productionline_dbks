@@ -60,6 +60,8 @@ profiles:
     copilot_domain: 'aperam_gnk'
     # catalog.schema holding metal_movements and timebased_sensor (read-only source)
     gnk_source_schema: 'SET_ME'
+    # daily OEE indicators (time model), one row per resource and day
+    gnk_indicators_table: 'dev_weu_next_best_action.raw.indicators_day_label'
     # Empty → the setup job GENERATES reference data in-workspace (recommended;
     # no external seed needed). Set both to copy dimension tables from an
     # existing seed schema instead (e.g. "main" / "line_manager_ai_kit").
@@ -246,6 +248,8 @@ profiles:
     copilot_domain: 'aperam_gnk'
     # catalog.schema holding metal_movements and timebased_sensor (read-only source)
     gnk_source_schema: 'SET_ME'
+    # daily OEE indicators (time model), one row per resource and day
+    gnk_indicators_table: 'dev_weu_next_best_action.raw.indicators_day_label'
     # Empty → the setup job GENERATES reference data in-workspace (recommended;
     # no external seed needed). Set both to copy dimension tables from an
     # existing seed schema instead (e.g. "main" / "line_manager_ai_kit").

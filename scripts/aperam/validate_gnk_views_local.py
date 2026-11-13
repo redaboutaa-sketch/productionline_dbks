@@ -18,9 +18,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pyspark.sql import SparkSession  # noqa: E402
 
 from src.aperam_gnk.synthetic import (  # noqa: E402
+    INDICATORS_DDL,
     METAL_MOVEMENTS_DDL,
+    SYNTHETIC_RESOURCE_MAP,
     TIMEBASED_SENSOR_DDL,
     generate,
+    generate_indicators,
     to_spark_rows,
 )
 from src.aperam_gnk.views import render_statements  # noqa: E402
@@ -29,7 +32,8 @@ GOLD = [
     "gnk_line_registry", "gnk_machine_map", "gnk_sensor_tags", "gnk_movements", "gold_gnk_coil_ops",
     "gold_gnk_line_kpi_shift_oee", "gold_gnk_line_kpi_daily", "gold_gnk_line_reference_rate",
     "gold_gnk_coil_position", "gold_gnk_wip_buffers", "gold_gnk_line_gaps", "gold_gnk_sensor_health_hourly",
-    "gold_gnk_sensor_by_coil",
+    "gold_gnk_sensor_by_coil", "gnk_resource_map", "gnk_indicators_day", "gold_gnk_time_losses_day",
+    "gold_gnk_oee_day",
 ]
 
 
@@ -51,8 +55,12 @@ def main() -> int:
         .write.mode("overwrite").saveAsTable("src.metal_movements")
     spark.createDataFrame(to_spark_rows(sensors, TIMEBASED_SENSOR_DDL), TIMEBASED_SENSOR_DDL) \
         .write.mode("overwrite").saveAsTable("src.timebased_sensor")
+    spark.createDataFrame(to_spark_rows(generate_indicators(mm), INDICATORS_DDL), INDICATORS_DDL) \
+        .write.mode("overwrite").saveAsTable("src.indicators_day_label")
 
-    for stmt in render_statements("src", "tgt", sensor_lookback_days=30):
+    for stmt in render_statements("src", "tgt", sensor_lookback_days=30,
+                                  indicators="src.indicators_day_label",
+                                  extra_resource_map=SYNTHETIC_RESOURCE_MAP):
         if stmt.startswith("CREATE OR REPLACE TABLE"):
             spark.sql(f"DROP TABLE IF EXISTS {stmt.split()[4]}")
             stmt = stmt.replace("CREATE OR REPLACE TABLE", "CREATE TABLE", 1)
@@ -65,6 +73,11 @@ def main() -> int:
         if n == 0:
             empty.append(obj)
     spark.sql("SELECT * FROM tgt.gold_gnk_wip_buffers ORDER BY tonnes_waiting DESC").show(10, False)
+    spark.sql("SELECT resource, line_armp, prod_date, round(t1_rot_over_lt,3) t1, round(speed_ratio,3) sr,"
+              " round(yield,3) y, round(oee,3) oee, round(failure_h,1) ft_h, round(mttr_min) mttr"
+              " FROM tgt.gold_gnk_oee_day ORDER BY resource, prod_date").show(25, False)
+    spark.sql("SELECT line_armp, level, loss_code, round(sum(loss_h),1) h FROM tgt.gold_gnk_time_losses_day"
+              " GROUP BY 1,2,3 ORDER BY h DESC").show(8, False)
     failures = _run_agent_sql(spark)
     spark.sql("SELECT line_armp, gap_start, gap_min FROM tgt.gold_gnk_line_gaps ORDER BY gap_min DESC").show(5, False)
     spark.stop()
@@ -115,6 +128,9 @@ def _run_agent_sql(spark) -> int:
               f"sensor rows={len(trace['sensor_profile'])}")
     scan = gtools.gnk_sensor_scan.invoke({"line_armp": "GN-CR-BAL1", "hours": 48})
     print("[agent SQL] gnk_sensor_scan BAL1 top:", [(t["tag_id"], t["z_recent_vs_baseline"]) for t in scan["tags"][:3]])
+    oee = gtools.gnk_oee_report.invoke({"line_or_resource": "GN-CR-CRM2", "days": 30})
+    print("[agent SQL] gnk_oee_report CRM2:", {k: round(v, 3) if isinstance(v, float) else v
+                                              for k, v in oee["period_totals"].items()}, oee["loss_pareto_h"][:3])
     flow = gtools.gnk_flow_overview.invoke({})
     print("[agent SQL] gnk_flow_overview:", [(w["line_armp"], w["queue_cover_h"]) for w in flow["queues_in_flow_order"][:5]])
     for e in errors:

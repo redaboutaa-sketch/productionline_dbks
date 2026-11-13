@@ -20,7 +20,7 @@ from src.aperam_gnk.synthetic import (
     generate,
     to_spark_rows,
 )
-from src.aperam_gnk.views import render_statements
+from src.aperam_gnk.views import DEFAULT_INDICATORS_TABLE, load_resource_map, render_statements
 
 
 @pytest.fixture(scope="module")
@@ -94,7 +94,8 @@ def test_every_gold_object_is_created():
         "gnk_line_registry", "gnk_machine_map", "gnk_sensor_tags", "gnk_movements", "gold_gnk_coil_ops",
         "gold_gnk_line_kpi_shift", "gold_gnk_line_kpi_shift_oee", "gold_gnk_line_kpi_daily",
         "gold_gnk_line_reference_rate", "gold_gnk_coil_position", "gold_gnk_wip_buffers", "gold_gnk_line_gaps",
-        "gnk_sensor", "gold_gnk_sensor_health_hourly", "gold_gnk_sensor_by_coil",
+        "gnk_sensor", "gold_gnk_sensor_health_hourly", "gold_gnk_sensor_by_coil", "gnk_resource_map",
+        "gnk_indicators_day", "gold_gnk_time_losses_day", "gold_gnk_oee_day",
     ):
         assert re.search(rf"CREATE OR REPLACE (VIEW|TABLE) t\.t\.{obj}\b", text), obj
 
@@ -140,3 +141,35 @@ def test_to_spark_rows_types(synthetic):
     assert all(r[idx] is None or isinstance(r[idx], Decimal) for r in rows)
     idx_w = METAL_MOVEMENTS_COLUMNS.index("Weight")
     assert all(r[idx_w] is None or isinstance(r[idx_w], int) for r in rows)
+
+
+# ── daily OEE indicators (time model) ────────────────────────────────────
+
+def test_indicators_table_is_wired_and_optional():
+    text = "\n".join(render_statements("s.s", "t.t"))
+    assert f"FROM {DEFAULT_INDICATORS_TABLE}" in text
+    skipped = "\n".join(render_statements("s.s", "t.t", indicators=None))
+    assert "gold_gnk_oee_day" not in skipped
+    custom = "\n".join(render_statements("s.s", "t.t", indicators="c.r.indicators_day_label",
+                                         extra_resource_map=[("SYN_X", "GN-CR-APL3", "synthetic")]))
+    assert "FROM c.r.indicators_day_label" in custom and "'SYN_X'" in custom
+
+
+def test_resource_map_csv_has_the_known_resource():
+    assert any(r == "RD79" for r, _, _ in load_resource_map())
+
+
+def test_synthetic_indicators_respect_the_time_model(synthetic):
+    from src.aperam_gnk.synthetic import INDICATOR_COLUMNS, generate_indicators
+
+    mm, _ = synthetic
+    ind = generate_indicators(mm, seed=3)
+    assert list(ind.columns) == INDICATOR_COLUMNS and len(ind) > 0
+    f = ind.fillna(0)
+    # TS = FT + UOT + ROT ; FT = sum of families ; FTT = sum of sub-families ; T1 = ROT / LT
+    assert ((f.FTdivTS + f.UOTdivTS + f.ROTdivTS) - 1).abs().max() < 1e-9
+    fam = f.FTOdivTS + f.FTPdivTS + f.FTSdivTS + f.FTTdivTS + f.FTWdivTS
+    assert (fam - f.FTdivTS).abs().max() < 1e-9
+    assert ((f.FTTEdivTS + f.FTTGdivTS + f.FTTIdivTS + f.FTTMdivTS) - f.FTTdivTS).abs().max() < 1e-9
+    ts = f.LT * (1 - f.SDO3plus4divLT)
+    assert ((f.ROTdivTS * ts / f.LT) - f.T1).abs().max() < 1e-9

@@ -23,7 +23,33 @@ données Aperam** (`metal_movements`, `timebased_sensor`, arbre ARMP) au lieu du
 | Contexte live Lakebase | Contexte construit depuis la couche gold : état des lignes (marche / dégradée / arrêtée avec file / affamée), KPI du poste, situations ouvertes | `agent_server/aperam_gnk/context.py` |
 | Prompts « production line » | Orchestrateur (EN/FR/NL) + 8 spécialistes + synthèse réécrits pour l'inox Genk | `agent_server/aperam_gnk/prompts.py` |
 | Outils lisant les tables d'embouteillage | 4 outils SQL déterministes : `gnk_line_status`, `gnk_coil_trace`, `gnk_sensor_scan`, `gnk_flow_overview` (+ `sql_query`, `calculator`) | `agent_server/aperam_gnk/tools.py` |
+| OEE A × P × Q | **OEE officiel journalier** = T1 (ROT / LT, issu du modèle de temps de `indicators_day_label`) × ratio de vitesse × rendement métal, avec l'arbre de pertes et le MTBF / MTTR | `src/aperam_gnk/sql/60_gold_gnk_time_model.sql` |
 | Générateur de données synthétiques | Générateur au **schéma exact** de vos tables, avec 3 incidents injectés (panne MKW2, zone 7 four BUL3, point de rosée BAL1) | `src/aperam_gnk/synthetic.py` |
+
+### Modèle de temps OEE (`indicators_day_label`)
+
+La table contient une ligne par ressource (`resource`, ex. `RD79`) et par jour. Les ratios y sont
+exprimés par rapport à trois bases : CT (temps calendaire), LT (temps requis) et TS (temps de service).
+J'ai reconstitué le modèle à partir des valeurs reçues. Les égalités ci-dessous se vérifient
+exactement sur vos lignes :
+
+```
+CT  = SD hors temps requis (SDC, SDE, SDM, SDP, SDO1, SDO2) + LT
+LT  = SDO3 + SDO4 (arrêts organisationnels comptés dans LT) + TS
+TS  = FT (pannes) + UOT (temps de marche non productif) + ROT (temps de marche réel)
+FT  = FTO + FTP + FTS + FTT + FTW        FTT = FTT-E + FTT-G + FTT-I + FTT-M
+T0  = LT / CT        T1 = ROT / LT        MTTR = FT / N_FT        MTBF = TS / N_FT
+```
+
+`gnk_indicators_day` reconstitue les heures de chaque poste du modèle.
+`gold_gnk_time_losses_day` donne l'arbre des pertes, qui sert d'entrée aux Pareto.
+`gold_gnk_oee_day` combine T1 avec la vitesse et le rendement issus de `metal_movements`.
+
+Pour cette combinaison, chaque ressource doit être rattachée à une ligne ARMP dans
+`src/aperam_gnk/reference/resource_map_gnk.csv`. Pour l'instant, `RD79` n'y est rattachée à aucune
+ligne : son OEE se limite alors à T1. Les agents utilisent cet OEE officiel pour les analyses par
+jour, semaine ou mois. L'OEE approché (proxy) issu de `metal_movements` ne sert que pour le poste en
+cours.
 
 ### Les 8 spécialistes en mode GNK
 
@@ -43,7 +69,9 @@ données Aperam** (`metal_movements`, `timebased_sensor`, arbre ARMP) au lieu du
 1. **Paramètres** : dans `config/project-settings.local.yaml`, renseigner les champs habituels de
    l'accélérateur, `copilot_domain: 'aperam_gnk'` et `gnk_source_schema: '<catalog>.<schema>'` (le
    schéma qui contient `metal_movements` et `timebased_sensor`).
-2. **Créer la couche GNK** dans le schéma de l'app (`uc_catalog.uc_schema`) :
+2. **Créer la couche GNK** dans le schéma de l'app (`uc_catalog.uc_schema`). Par défaut, la table
+   d'indicateurs journaliers lue est `dev_weu_next_best_action.raw.indicators_day_label`. L'option
+   `--indicators <catalog.schema.table>` en désigne une autre ; `--indicators ''` désactive cette partie.
 
    ```bash
    python -m src.aperam_gnk.views --src <catalog>.<schema_source> --tgt <uc_catalog>.<uc_schema> --dry-run
@@ -98,7 +126,12 @@ Le code est écrit pour être corrigé en un seul endroit si une hypothèse est 
 6. **Rôle de BUL4, CRM5, SL52** sur le flux : absents des posters du site.
 7. **Postes** : 3 × 8 h, 06-14 / 14-22 / 22-06, en heure locale (Europe/Brussels) ?
 8. **Emballage** : seules les opérations `PCKI`, `PCKG`, `PCK` comptent (commentaire du mapping).
-9. **Aciérie** : `Metal` désigne-t-il la coulée ou la brame sur EAF/AOD/CCS ? Comment se fait le lien
+9. **Indicateurs journaliers** :
+   - à quelle ligne ARMP correspond `RD79` ? Et quelles autres ressources existent ?
+   - que signifient exactement SDC, SDE, SDP, SDO1 à SDO4, FTO, FTP, FTS, FTW, FTT-G, `N_FUST` et `N_STRI` ?
+     Les agents s'en tiennent aux codes, sans en inventer le sens.
+   - `periode` est-elle une journée calendaire (00-24 h) ou une journée de production (06-06 h) ?
+10. **Aciérie** : `Metal` désigne-t-il la coulée ou la brame sur EAF/AOD/CCS ? Comment se fait le lien
    brame → bobine noire après Châtelet ?
 
 ## 4. Ce qui reste à faire (phase 2)
