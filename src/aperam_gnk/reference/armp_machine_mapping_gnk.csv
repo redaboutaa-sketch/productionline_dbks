@@ -1,0 +1,69 @@
+Site_FK,SiteName,MachineCode_Local,MachineCode_Local_Description,ARMP,Movement_Condition,Comments,COUNT_of_MetalMovementID
+3,GNK,AFS1,Deslagging for ladles Furnace 1,GN-ST-EAF1-20,,,2473
+3,GNK,AFS2,Deslagging for ladles Furnace 2,GN-ST-EAF2-20,,,18043
+3,GNK,AFW1,Melt Finishing Stand 1,GN-ST-SLM1,,,11071
+3,GNK,AFW2,Melt Finishing Stand 2,GN-ST-SLM2,,,2
+3,GNK,AFW3,Melt Finishing Stand 3,GN-ST-SLM3,,,10594
+3,GNK,AOD1,Basic Oxigen Furnace Area,GN-ST-AOD1,,,21094
+3,GNK,B1SL,Slitting Line 1 - SteelCenter Limburg,SS-RP-SLT1,,,3883
+3,GNK,B2SL,Slitting Line 2 - SteelCenter Limburg,SS-RP-SLT2,,,4693
+3,GNK,BAL1,Bright Annealing Line 1,GN-CR-BAL1,,,13569
+3,GNK,BS2L,Slitting Line 2 - Light (Licht),GN-RP-SLT2-02-01,,,27013
+3,GNK,BS2Z,Slitting Line 2 - Heavy (Zwaar),GN-RP-SLT2-02-02,,,33384
+3,GNK,BUL1,Annealing and Pickling Line 1,GN-CR-APL1,,,22
+3,GNK,BUL2,Annealing and Pickling Line 2,GN-CR-APL2,,,59414
+3,GNK,BUL3,Annealing and Pickling Line 3,GN-CR-APL3,,,114074
+3,GNK,BUL4,Annealing and Pickling Line 4,GN-CR-APL4,,,17757
+3,GNK,BVL2,Coil Preparation Line 2,GN-CR-CPL2,,,31475
+3,GNK,CRM3,Cold Rolling Mill 3,GN-CR-CRM3,,,23168
+3,GNK,CRM4,Cold Rolling Mill 4,GN-CR-CRM4,,,5166
+3,GNK,CRM5,Cold Rolling Mill 5,GN-CR-CRM5,,,7418
+3,GNK,EAF1,Electric Arc Furnace 1,GN-ST-EAF1,,,
+3,GNK,EAF2,Electric Arc Furnace 2,GN-ST-EAF2,,,
+3,GNK,ENT,?,,Y,,1
+3,GNK,EXPK,Package External Transport/Expedition,GN-RP-ETR1,Y,,
+3,GNK,GIET,Continuous Caster Slabs 1,GN-ST-CCS1,,,20429
+3,GNK,GR2,Coil Polishing Line 2,GN-RP-CPO2,,,1470
+3,GNK,HERS,Recutting Slab Head & Tail,GN-ST-RCU1,,,1355
+3,GNK,INV,Package Invoicing,GN-RP-INV1,Y,,
+3,GNK,KG,Continuous Caster Slabs 1,GN-ST-CCS1,,,20630
+3,GNK,KLOK,Batch Annealing Furnaces 1,GN-CR-BAF1,,,3893
+3,GNK,KW1,Technical Operation Correction Coil & Part Identification,GN-CR-TOC1,Y,,462
+3,GNK,L1SL,Cut To Length Line 1 - Steelcenter Limburg,SS-RP-CTL1,,,717
+3,GNK,L2SL,Cut To Length Line 2 - Steelcenter Limburg,SS-RP-CTL2,,,1317
+3,GNK,LS2L,Cut To Length Line 2 - Light (Licht),GN-RP-CTL2-02-01,,,638
+3,GNK,LS2Z,Cut To Length Line 2 - Heavy (Zwaar),GN-RP-CTL2-02-02,,,7307
+3,GNK,LWDR,Hirework purchase,,Y,,180
+3,GNK,LWEX,,,Y,,4
+3,GNK,MKW2,Cold Rolling Mill 2,GN-CR-CRM2,,,45251
+3,GNK,OVN1,Electric Arc Furnace 1,GN-ST-EAF1,,,2180
+3,GNK,OVN2,Electric Arc Furnace 2,GN-ST-EAF2,,,18272
+3,GNK,P1SL,Polish Line 1 - Steelcenter Limburg,SS-RP-CPO1,,,372
+3,GNK,PACK,Packing Genk,GN-RP-PCK1,,"OperationNameLocal IN ('PCKI','PCKG','PCK')",980052
+3,GNK,PACKS,Packing S&S Benelux (Hirework),GN-RP-PCK1,,"OperationNameLocal IN ('PCKI','PCKG','PCK')",108320
+2,GNK,PCK,Package Packaging,GN-RP-PCK1,,,
+3,GNK,PRDC,Package Production,GN-RP-PRD1,,,
+3,GNK,RBG,,,Y,,1
+3,GNK,RCG,Reception Black Coil in Cold Rolling Mill,GN-CR-RCP1,Y,,110347
+3,GNK,RCGG,Reception Slab in Steel Plant,GN-ST-RCP1,Y,,173
+3,GNK,SCR,Scrap Slab,GN-ST-SCR1,Y,,2413
+3,GNK,SCRAP,Scrapping,GN-ST-SCR2,Y,,13549
+3,GNK,SKP1,Skin Pass 1,GN-CR-SKP1,,,17710
+3,GNK,SKP2,Skin Pass 2,GN-CR-SKP2,,,13731
+3,GNK,SL52,Slitting Line 52,GN-RP-SLT5,,,
+3,GNK,SL60,Slitting Line 60,GN-RP-SLT6,,,10404
+3,GNK,SLP1,Slab Grinder 1,GN-ST-CCS1-40-01,,,13949
+3,GNK,SLP2,Slab Grinder 2,GN-ST-CCS1-40-02,,,15941
+3,GNK,SLP3,Slab Grinder 3,GN-ST-CCS1-40-03,,,17795
+3,GNK,SLP4,Slab Grinder 4,GN-ST-CCS1-40-04,,,19135
+3,GNK,SLPM,Grinding of slabs,,,,351
+3,GNK,STL1,Stretch-Bend-Levelling Line 1,GN-RP-SBL1,,,5258
+3,GNK,SUPPL,?,,Y,,253
+3,GNK,TP,Transport from Hot Rolling Mill to Cold Rolling Mill,GN-CR-ETR1,Y,,110655
+3,GNK,VOD1,Vacuum Oxigen Decarburator 1,GN-ST-VOD1,,,109
+3,GNK,VOD2,Vacuum Oxigen Decarburator 1,GN-ST-VOD2,,,60
+3,GNK,VZAL,Transport from Aperam SteelCenter Limburg to Aperam Genk,SS-RP-ETR1,Y,,608
+3,GNK,VZCA,Transport from Steelmaking to Hot Rolling Mill Châtelet,GN-ST-ETR1,Y,,99373
+3,GNK,VZKL,Expedition of slabs to SWBremen for hot rolling,GN-ST-ETR8,Y,,85
+3,GNK,VZPL,Expedition of slabs to Platinox for hot rolling ( does not occur anymore ),GN-ST-ETR9,Y,,4
+3,GNK,VZSL,Transport from Aperam Genk to Aperam SteelCenter Limburg,GN-CR-ETR2,Y,,9157

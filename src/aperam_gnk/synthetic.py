@@ -1,0 +1,440 @@
+"""Synthetic GNK data in the EXACT schemas of ``metal_movements`` and ``timebased_sensor``.
+
+Purpose: develop and demo the copilot without production data, and test the
+SQL layer locally. Everything here is invented; volumes, rates and incidents
+are plausible for a stainless cold-rolling site but are NOT Genk figures.
+
+    python -m src.aperam_gnk.synthetic --days 3 --out ./data/gnk_synthetic   # parquet files
+    python -m src.aperam_gnk.synthetic --days 3 --uc-target cat.schema      # Spark only (Databricks)
+
+Injected incidents (so the specialists have something real to find):
+  * CRM2_BREAKDOWN   - MKW2 stops ~6 h on day 2 (gap + WIP pile-up in front of it)
+  * BAL1_DEWPOINT    - BAL1 atmosphere dew point drifts out of range on day 2 -> BA coils BLOQ
+  * APL3_FURNACE_Z7  - APL3 zone 7 under-temperature on day 1 afternoon, slower process speed
+"""
+
+from __future__ import annotations
+
+import argparse
+import heapq
+import math
+import random
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pandas as pd
+
+from src.aperam_gnk.assets import (
+    GRADES,
+    LINES_BY_ARMP,
+    ROUTES,
+    SENSOR_TEMPLATES,
+    SITE_FK_GNK,
+    Line,
+)
+
+METAL_MOVEMENTS_COLUMNS: list[str] = [
+    "ProductId", "ProductId_Legacy", "Metal", "Metal_Legacy", "MetalPart", "MetalHeat", "Machine",
+    "Machine_Indication", "Asset_Tree", "ARMP_Rank", "StartDateTimeMachineSpecific", "EndDateTimeMachineSpecific",
+    "unix_StartDateTimeMachineSpecific", "unix_EndDateTimeMachineSpecific", "FinishCode", "OperationStatus",
+    "MU_rank", "UnderWindEntry", "UnderWindExit", "LengthPositionSegmInBegin", "LengthPositionSegmInEnd",
+    "WidthPositionSegmInBegin", "WidthPositionSegmInEnd", "HasBeginEndChanged", "NumberOfPasses",
+    "NumberOfPassesProcessed", "Site_FK", "Operation_FK", "OperationNameLocal", "ProductionLine_FK",
+    "WorkshopNameLocal", "SpeedSetpoint", "SpeedRealised", "DurationROT", "SlabPosition", "Length", "Width",
+    "Thickness", "Weight", "Rank", "shape", "Grade", "MetalUnitMaster_FK", "MetalUnitMaster_BK", "MetalUnit_FK",
+    "MetalUnit_BK", "MetalMovemenet_FK", "MetalMovement_BK", "merge_attempts", "CurrentMetalUnitIdTim",
+    "MotherMetalUnitIdTim",
+]
+
+# Source column types, as documented by the data owners (information_schema of the source tables).
+METAL_MOVEMENTS_DDL = (
+    "ProductId string, ProductId_Legacy string, Metal string, Metal_Legacy string, MetalPart string, "
+    "MetalHeat string, Machine string, Machine_Indication string, Asset_Tree string, ARMP_Rank string, "
+    "StartDateTimeMachineSpecific timestamp, EndDateTimeMachineSpecific timestamp, "
+    "unix_StartDateTimeMachineSpecific bigint, unix_EndDateTimeMachineSpecific bigint, FinishCode string, "
+    "OperationStatus string, MU_rank string, UnderWindEntry decimal(11,0), UnderWindExit decimal(11,0), "
+    "LengthPositionSegmInBegin int, LengthPositionSegmInEnd int, WidthPositionSegmInBegin decimal(7,2), "
+    "WidthPositionSegmInEnd decimal(7,2), HasBeginEndChanged decimal(11,0), NumberOfPasses decimal(11,0), "
+    "NumberOfPassesProcessed decimal(11,0), Site_FK int, Operation_FK int, OperationNameLocal string, "
+    "ProductionLine_FK int, WorkshopNameLocal string, SpeedSetpoint decimal(6,2), SpeedRealised decimal(6,2), "
+    "DurationROT int, SlabPosition string, Length decimal(10,3), Width decimal(10,3), Thickness decimal(10,3), "
+    "Weight int, Rank string, shape int, Grade string, MetalUnitMaster_FK decimal(20,0), MetalUnitMaster_BK string, "
+    "MetalUnit_FK decimal(20,0), MetalUnit_BK string, MetalMovemenet_FK decimal(20,0), MetalMovement_BK string, "
+    "merge_attempts int, CurrentMetalUnitIdTim string, MotherMetalUnitIdTim string"
+)
+TIMEBASED_SENSOR_DDL = (
+    "TagId string, Timestamp timestamp, Date date, unix_timestamp bigint, Domain string, Value string, "
+    "Flag_ValueInRange boolean, Flag_MasterDataExists boolean"
+)
+
+TIMEBASED_SENSOR_COLUMNS: list[str] = [
+    "TagId", "Timestamp", "Date", "unix_timestamp", "Domain", "Value", "Flag_ValueInRange", "Flag_MasterDataExists",
+]
+
+# Rate on ROT (t/h) and nominal speed (m/min) per line kind. Invented, order of magnitude only.
+_RATE_T_H: dict[str, float] = {
+    "reception": 0.0, "batch_annealing": 0.0, "coil_prep": 120, "hapl": 110, "capl": 95, "bal": 22,
+    "crm_cvc6": 55, "crm_cvc4": 45, "crm_z": 30, "crm": 40, "skin_pass": 110, "slitter": 60, "ctl": 30,
+    "stretch_leveller": 25, "polishing": 20, "packing": 250,
+}
+_SPEED_M_MIN: dict[str, float] = {
+    "coil_prep": 150, "hapl": 60, "capl": 90, "bal": 35, "crm_cvc6": 600, "crm_cvc4": 550, "crm_z": 500,
+    "crm": 500, "skin_pass": 300, "slitter": 200, "ctl": 60, "stretch_leveller": 45, "polishing": 40,
+}
+_BATCH_ANNEALING_H = 30.0
+_MACHINE_CHOICE: dict[str, tuple[str, ...]] = {"GN-RP-SLT2": ("BS2L", "BS2Z"), "GN-RP-CTL2": ("LS2L", "LS2Z")}
+
+
+@dataclass
+class Incident:
+    code: str
+    line_armp: str
+    start: datetime
+    end: datetime
+
+
+def _incidents(t0: datetime) -> list[Incident]:
+    return [
+        Incident("APL3_FURNACE_Z7", "GN-CR-APL3", t0 + timedelta(hours=14), t0 + timedelta(hours=20)),
+        Incident("CRM2_BREAKDOWN", "GN-CR-CRM2", t0 + timedelta(days=1, hours=9), t0 + timedelta(days=1, hours=15)),
+        Incident("BAL1_DEWPOINT", "GN-CR-BAL1", t0 + timedelta(days=1, hours=2), t0 + timedelta(days=1, hours=10)),
+    ]
+
+
+def _unix(ts: datetime | None) -> int | None:
+    return None if ts is None else int(ts.timestamp())
+
+
+class _Generator:
+    def __init__(self, start: datetime, days: int, coils_per_day: int, seed: int) -> None:
+        self.rng = random.Random(seed)
+        self.t0 = start
+        self.t_end = start + timedelta(days=days)
+        self.days = days
+        self.coils_per_day = coils_per_day
+        self.line_free: dict[str, datetime] = {}
+        self.rows: list[dict] = []
+        self.runs: list[tuple[str, datetime, datetime]] = []  # (line, start, end) for sensors
+        self.incidents = _incidents(start)
+        self._movement_seq = 0
+        self.line_fk = {armp: i + 1 for i, armp in enumerate(sorted(LINES_BY_ARMP))}
+
+    # ── helpers ──────────────────────────────────────────────────────────
+    def _incident(self, line: str, at: datetime) -> Incident | None:
+        for inc in self.incidents:
+            if inc.line_armp == line and inc.start <= at < inc.end:
+                return inc
+        return None
+
+    def _row(self, *, metal: str, part: str, heat: str, line: Line, machine: str, rank: int, start: datetime | None,
+             end: datetime | None, status: str, finish: str, grade: str, length: float, width: float,
+             thickness: float, weight_kg: int, shape: int, sp_set: float | None = None, sp_real: float | None = None,
+             rot: int | None = None, passes: int | None = None) -> None:
+        self._movement_seq += 1
+        armp_rank = str(rank // 10)
+        asset_tree = "-".join(line.armp.split("-")[:3])
+        indication = machine[-1] if machine in ("BS2L", "BS2Z", "LS2L", "LS2Z") else None
+        op_name = "PCK" if line.kind == "packing" else machine
+        self.rows.append({
+            "ProductId": f"{metal}_{part}_{armp_rank}_{asset_tree}",
+            "ProductId_Legacy": f"{metal}{part}",
+            "Metal": metal, "Metal_Legacy": metal, "MetalPart": part, "MetalHeat": heat,
+            "Machine": machine, "Machine_Indication": indication, "Asset_Tree": asset_tree, "ARMP_Rank": armp_rank,
+            "StartDateTimeMachineSpecific": start, "EndDateTimeMachineSpecific": end,
+            "unix_StartDateTimeMachineSpecific": _unix(start), "unix_EndDateTimeMachineSpecific": _unix(end),
+            "FinishCode": finish, "OperationStatus": status, "MU_rank": "1",
+            "UnderWindEntry": 0, "UnderWindExit": 0,
+            "LengthPositionSegmInBegin": 0, "LengthPositionSegmInEnd": int(length * 1000),
+            "WidthPositionSegmInBegin": 0.0, "WidthPositionSegmInEnd": round(width, 2),
+            "HasBeginEndChanged": 0, "NumberOfPasses": passes, "NumberOfPassesProcessed": passes if status == "EXEC" else None,
+            "Site_FK": SITE_FK_GNK, "Operation_FK": 1000 + self.line_fk[line.armp],
+            "OperationNameLocal": op_name, "ProductionLine_FK": self.line_fk[line.armp],
+            "WorkshopNameLocal": line.workshop,
+            "SpeedSetpoint": None if sp_set is None else round(sp_set, 2),
+            "SpeedRealised": None if sp_real is None else round(sp_real, 2),
+            "DurationROT": rot, "SlabPosition": None,
+            "Length": round(length, 3), "Width": round(width, 3), "Thickness": round(thickness, 3),
+            "Weight": int(weight_kg), "Rank": str(rank), "shape": shape, "Grade": grade,
+            "MetalUnitMaster_FK": None, "MetalUnitMaster_BK": metal, "MetalUnit_FK": None, "MetalUnit_BK": f"{metal}{part}",
+            "MetalMovemenet_FK": self._movement_seq, "MetalMovement_BK": f"MM{self._movement_seq:09d}",
+            "merge_attempts": 0, "CurrentMetalUnitIdTim": None, "MotherMetalUnitIdTim": None,
+        })
+
+    # ── cold side ────────────────────────────────────────────────────────
+    def _pick_route(self):
+        x = self.rng.random()
+        acc = 0.0
+        for r in ROUTES:
+            acc += r.share
+            if x <= acc:
+                return r
+        return ROUTES[-1]
+
+    def generate_cold_side(self) -> None:
+        """Event-driven: coils are scheduled on each line in the order they become ready (FIFO per line)."""
+        n = self.days * self.coils_per_day
+        heap: list[tuple[datetime, int, dict]] = []
+        for i in range(n):
+            arrival = self.t0 + timedelta(hours=self.rng.uniform(-12, self.days * 24 - 6))
+            route = self._pick_route()
+            family = "ferritic" if route.product == "2B-F" else self.rng.choice(("austenitic", "austenitic", "ferritic"))
+            coil = {
+                "metal": f"G{arrival:%y%j}{i:04d}", "heat": f"H{self.rng.randint(100000, 999999)}",
+                "route": route, "grade": self.rng.choice(GRADES[family]),
+                "width": float(self.rng.choice((1000, 1250, 1500, 1524, 2000))),
+                "thickness": self.rng.uniform(3.0, 6.0), "weight_t": self.rng.uniform(15, 26), "step": 0,
+            }
+            heapq.heappush(heap, (arrival, i, coil))
+        while heap:
+            ready, key, c = heapq.heappop(heap)
+            nxt = self._process_step(c, ready)
+            if nxt is not None:
+                heapq.heappush(heap, (nxt, key, c))
+
+    def _process_step(self, c: dict, ready: datetime) -> datetime | None:
+        """Book one operation of coil ``c``; return when it is ready for the next one (None = route over)."""
+        route = c["route"]
+        step_idx = c["step"]
+        if step_idx >= len(route.steps):
+            return None
+        armp = route.steps[step_idx]
+        line = LINES_BY_ARMP[armp]
+        rank = (step_idx + 1) * 10
+        if line.kind.startswith("crm"):
+            floor = 0.4 if line.kind == "crm_z" else 0.6
+            c["thickness"] = max(floor, c["thickness"] * self.rng.uniform(0.2, 0.45))
+        elif line.kind == "skin_pass":
+            c["thickness"] *= 0.994
+        passes = self.rng.randint(5, 11) if line.kind.startswith("crm") else None
+        width, thickness, weight_t = c["width"], c["thickness"], c["weight_t"]
+        length = weight_t / (width / 1000 * thickness / 1000 * 7.9)
+        common = dict(metal=c["metal"], heat=c["heat"], line=line, rank=rank, finish=route.product, grade=c["grade"],
+                      length=length, width=width, thickness=thickness, shape=3, passes=passes)
+
+        if ready >= self.t_end:
+            # not reached within the window: the remaining route stays planned
+            for k in range(step_idx, len(route.steps)):
+                ln = LINES_BY_ARMP[route.steps[k]]
+                status = "DISP" if k == step_idx else "NDIS"
+                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part="00", machine=ln.machine_codes[0],
+                          start=None, end=None, status=status, weight_kg=int(weight_t * 1000))
+            return None
+
+        machine = self.rng.choice(_MACHINE_CHOICE.get(armp, (line.machine_codes[0],)))
+        if line.kind == "reception":
+            end = ready + timedelta(minutes=5)
+            self._row(**common, part="00", machine=machine, start=ready, end=end, status="EXEC",
+                      weight_kg=int(weight_t * 1000))
+            c["step"] += 1
+            return end
+
+        sp_set = _SPEED_M_MIN.get(line.kind)
+        if line.kind == "batch_annealing":
+            start = ready + timedelta(hours=self.rng.uniform(2, 10))
+            end = start + timedelta(hours=_BATCH_ANNEALING_H * self.rng.uniform(0.9, 1.1))
+            rot = int((end - start).total_seconds() / 60)
+        else:
+            queue_free = self.line_free.get(armp, self.t0 - timedelta(days=1))
+            start = max(ready + timedelta(minutes=self.rng.uniform(20, 120)),
+                        queue_free + timedelta(minutes=self.rng.uniform(3, 12)))
+            inc = self._incident(armp, start)
+            if inc and inc.code == "CRM2_BREAKDOWN":
+                start = inc.end + timedelta(minutes=self.rng.uniform(10, 40))
+            rate = _RATE_T_H[line.kind] * self.rng.uniform(0.85, 1.05)
+            if line.kind.startswith("crm"):
+                rate *= 6.0 / passes  # more passes, lower t/h
+            slow = armp == "GN-CR-APL3" and self._incident(armp, start) is not None
+            if slow:
+                rate *= 0.75
+            rot = max(5, int(weight_t / rate * 60))
+            stop = self.rng.uniform(5, 45) if self.rng.random() < 0.15 else 0.0
+            end = start + timedelta(minutes=rot + stop)
+            self.line_free[armp] = end
+
+        sp_real = None
+        if sp_set:
+            factor = self.rng.uniform(0.86, 1.0)
+            if armp == "GN-CR-APL3" and self._incident(armp, start):
+                factor *= 0.78
+            sp_real = sp_set * factor
+
+        if end > self.t_end:
+            status = "COUR" if start <= self.t_end else "DISP"
+            self._row(**common, part="00", machine=machine, start=start if status == "COUR" else None, end=None,
+                      status=status, weight_kg=int(weight_t * 1000), sp_set=sp_set)
+            for k in range(step_idx + 1, len(route.steps)):
+                ln = LINES_BY_ARMP[route.steps[k]]
+                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part="00", machine=ln.machine_codes[0],
+                          start=None, end=None, status="NDIS", weight_kg=int(weight_t * 1000))
+            return None
+
+        weight_out = weight_t * self.rng.uniform(0.975, 0.997)
+        parts = self.rng.randint(2, 6) if line.kind in ("slitter", "ctl") else 1
+        for p in range(parts):
+            self._row(**{**common, "width": (width - 20) / parts, "shape": 6 if line.kind == "ctl" else 3},
+                      part=f"{p + 1:02d}" if parts > 1 else "00", machine=machine, start=start, end=end,
+                      status="EXEC", weight_kg=int(weight_out * 1000 / parts), sp_set=sp_set, sp_real=sp_real, rot=rot)
+        self.runs.append((armp, start, end))
+        c["weight_t"] = weight_out
+        c["step"] += 1
+
+        # BA coils annealed during the dew point excursion are put on quality hold before the next step
+        if armp == "GN-CR-BAL1" and self._incident(armp, start) and c["step"] < len(route.steps):
+            ln = LINES_BY_ARMP[route.steps[c["step"]]]
+            self._row(**{**common, "line": ln, "rank": rank + 10}, part="00", machine=ln.machine_codes[0],
+                      start=None, end=None, status="BLOQ", weight_kg=int(weight_out * 1000))
+            return None
+        return end
+
+    # ── steel shop (heats -> slabs) ──────────────────────────────────────
+    def generate_steel_shop(self) -> None:
+        t = self.t0
+        heat_no = 0
+        while t < self.t_end - timedelta(hours=3):
+            heat_no += 1
+            eaf = "GN-ST-EAF2" if heat_no % 3 else "GN-ST-EAF1"
+            eaf_line = LINES_BY_ARMP[eaf]
+            heat = f"H{t:%y%j}{heat_no:03d}"
+            grade = self.rng.choice(GRADES["austenitic"] + GRADES["ferritic"])
+            tons = (eaf_line.spec.capacity_t or 100) * self.rng.uniform(0.95, 1.02)
+            cycle = (eaf_line.spec.cycle_min or 60) * self.rng.uniform(0.95, 1.15)
+            steps = [
+                (eaf, cycle, "OVN2" if eaf.endswith("2") else "OVN1"),
+                ("GN-ST-AOD1", self.rng.uniform(45, 60), "AOD1"),
+                (self.rng.choice(("GN-ST-SLM1", "GN-ST-SLM3")), self.rng.uniform(25, 40), None),
+                ("GN-ST-CCS1", self.rng.uniform(50, 65), "GIET"),
+            ]
+            start = t
+            for rank, (armp, dur, machine) in enumerate(steps, start=1):
+                line = LINES_BY_ARMP[armp]
+                machine = machine or line.machine_codes[0]
+                end = start + timedelta(minutes=dur)
+                if end > self.t_end:
+                    break
+                self._row(metal=heat, part="00", heat=heat, line=line, machine=machine, rank=rank * 10, start=start,
+                          end=end, status="EXEC", finish="SLAB", grade=grade, length=0.0, width=0.0, thickness=0.0,
+                          weight_kg=int(tons * 1000), shape=7 if armp == "GN-ST-CCS1" else 5, rot=int(dur))
+                self.runs.append((armp, start, end))
+                start = end + timedelta(minutes=self.rng.uniform(5, 15))
+            t += timedelta(minutes=cycle)
+
+    # ── sensors ──────────────────────────────────────────────────────────
+    def generate_sensors(self, step_s: int, lines: set[str] | None = None) -> pd.DataFrame:
+        by_line: dict[str, list[tuple[datetime, datetime]]] = {}
+        for armp, s, e in self.runs:
+            by_line.setdefault(armp, []).append((s, e))
+        out: list[dict] = []
+        n_steps = int((self.t_end - self.t0).total_seconds() // step_s)
+        for armp, line in LINES_BY_ARMP.items():
+            templates = SENSOR_TEMPLATES.get(line.kind)
+            if not templates or (lines and armp not in lines):
+                continue
+            intervals = sorted(by_line.get(armp, []))
+            if not intervals:
+                continue  # a line that never ran in the window has no historian data
+            j = 0
+            drift_state = {t.suffix: 0.0 for t in templates}
+            for k in range(n_steps):
+                ts = self.t0 + timedelta(seconds=k * step_s)
+                while j < len(intervals) and intervals[j][1] < ts:
+                    j += 1
+                running = j < len(intervals) and intervals[j][0] <= ts <= intervals[j][1]
+                inc = self._incident(armp, ts)
+                for t in templates:
+                    is_speed = "SPEED" in t.suffix or t.suffix in ("SHEAR.CYCLES", "STRETCH.FORCE", "KNIFE.LOAD")
+                    if not running and (is_speed or "ROLLFORCE" in t.suffix or "TEN." in t.suffix or "ELONG" in t.suffix):
+                        value = 0.0
+                    else:
+                        noise = self.rng.gauss(0, t.noise * abs(t.nominal) if t.nominal else 1.5)
+                        value = t.nominal + noise
+                        if inc and inc.code == "APL3_FURNACE_Z7" and t.suffix == "FUR.Z07.TEMP":
+                            frac = (ts - inc.start) / (inc.end - inc.start)
+                            value -= 90 * math.sin(math.pi * frac)
+                        if inc and inc.code == "APL3_FURNACE_Z7" and t.suffix == "PRC.STRIP.SPEED":
+                            value *= 0.78
+                        if inc and inc.code == "BAL1_DEWPOINT" and t.suffix == "ATM.DEWPOINT":
+                            drift_state[t.suffix] = min(25.0, drift_state[t.suffix] + 0.08 * step_s / 60)
+                            value += drift_state[t.suffix]
+                        if inc and inc.code == "CRM2_BREAKDOWN":
+                            value = 0.0 if is_speed or "ROLLFORCE" in t.suffix else value
+                    in_range = t.low <= value <= t.high
+                    out.append({
+                        "TagId": f"{armp}.{t.suffix}", "Timestamp": ts, "Date": ts.date(),
+                        "unix_timestamp": _unix(ts), "Domain": "-".join(armp.split("-")[:3]),
+                        "Value": f"{value:.3f}", "Flag_ValueInRange": bool(in_range), "Flag_MasterDataExists": True,
+                    })
+        return pd.DataFrame(out, columns=TIMEBASED_SENSOR_COLUMNS)
+
+
+def to_spark_rows(df: pd.DataFrame, ddl: str) -> list[tuple]:
+    """Convert a generated DataFrame to Python rows matching ``ddl`` (None for nulls, Decimal for decimals)."""
+    from decimal import Decimal
+
+    types = [part.strip().split(" ", 1)[1].strip().lower() for part in ddl.split(", ") if " " in part.strip()]
+    # decimal(p,s) contains ", " only without a space after the comma, so the split above is safe.
+    conv = []
+    for typ in types:
+        if typ.startswith("decimal"):
+            scale = int(typ.split(",")[1].rstrip(")"))
+            conv.append(lambda v, s=scale: Decimal(f"{float(v):.{s}f}"))
+        elif typ in ("int", "bigint"):
+            conv.append(lambda v: int(v))
+        elif typ == "timestamp":
+            conv.append(lambda v: v.to_pydatetime() if hasattr(v, "to_pydatetime") else v)
+        elif typ == "boolean":
+            conv.append(lambda v: bool(v))
+        else:
+            conv.append(lambda v: v)
+    out = []
+    for rec in df.itertuples(index=False, name=None):
+        out.append(tuple(None if (v is None or (isinstance(v, float) and math.isnan(v)) or v is pd.NaT) else f(v)
+                         for v, f in zip(rec, conv)))
+    return out
+
+
+def generate(days: int = 3, start: datetime | None = None, coils_per_day: int = 90, sensor_step_s: int = 60,
+             seed: int = 42, sensor_lines: set[str] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return ``(metal_movements, timebased_sensor)`` DataFrames in the source schemas."""
+    if start is None:
+        # end the window "now" so ages, look-backs and current_timestamp() filters behave like live data
+        now = datetime.now().replace(minute=0, second=0, microsecond=0)
+        start = (now - timedelta(days=days)).replace(hour=6)
+    g = _Generator(start, days, coils_per_day, seed)
+    g.generate_steel_shop()
+    g.generate_cold_side()
+    mm = pd.DataFrame(g.rows, columns=METAL_MOVEMENTS_COLUMNS)
+    sensors = g.generate_sensors(sensor_step_s, sensor_lines)
+    return mm, sensors
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--days", type=int, default=3)
+    ap.add_argument("--coils-per-day", type=int, default=90)
+    ap.add_argument("--sensor-step-s", type=int, default=60)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--out", type=Path, help="write metal_movements.parquet / timebased_sensor.parquet here")
+    ap.add_argument("--uc-target", help="catalog.schema to write Delta tables to (needs an active Spark session)")
+    args = ap.parse_args(argv)
+    mm, sensors = generate(args.days, coils_per_day=args.coils_per_day, sensor_step_s=args.sensor_step_s, seed=args.seed)
+    print(f"metal_movements: {len(mm):,} rows, timebased_sensor: {len(sensors):,} rows")
+    if args.out:
+        args.out.mkdir(parents=True, exist_ok=True)
+        mm.to_parquet(args.out / "metal_movements.parquet", index=False)
+        sensors.to_parquet(args.out / "timebased_sensor.parquet", index=False)
+        print(f"written to {args.out}")
+    if args.uc_target:
+        from pyspark.sql import SparkSession
+
+        spark = SparkSession.builder.getOrCreate()
+        spark.createDataFrame(to_spark_rows(mm, METAL_MOVEMENTS_DDL), METAL_MOVEMENTS_DDL).write.mode("overwrite").option("overwriteSchema", "true") \
+            .saveAsTable(f"{args.uc_target}.metal_movements")
+        spark.createDataFrame(to_spark_rows(sensors, TIMEBASED_SENSOR_DDL), TIMEBASED_SENSOR_DDL).write.mode("overwrite").option("overwriteSchema", "true") \
+            .saveAsTable(f"{args.uc_target}.timebased_sensor")
+        print(f"Delta tables written to {args.uc_target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
