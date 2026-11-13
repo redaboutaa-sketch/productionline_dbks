@@ -1,21 +1,24 @@
--- Gold: material flow - where every coil is now, and the queues (WIP buffers) in front of each line.
+-- Gold: material flow - where every piece (coil_id = ProductId_Legacy) is now, and the queues (WIP buffers)
+-- in front of each line.
 -- This is the GNK counterpart of the upstream cascade "buffers": a line whose queue empties
 -- will starve, a line whose output queue keeps growing is blocked downstream.
 CREATE OR REPLACE VIEW {tgt}.gold_gnk_coil_position AS
 WITH last_exec AS (
-  SELECT metal, line_armp, line_name, workshop, stage, ts_end, weight_t, grade, finish_code, thickness_mm, width_mm,
-         row_number() OVER (PARTITION BY metal ORDER BY ts_end DESC) AS rn
+  SELECT coil_id, coil_legacy, line_armp, line_name, workshop, stage, ts_end, weight_t, grade, finish_code,
+         thickness_mm, width_mm,
+         row_number() OVER (PARTITION BY coil_id ORDER BY ts_end DESC) AS rn
   FROM {tgt}.gnk_movements
   WHERE op_status = 'EXEC' AND ts_end IS NOT NULL
 ),
 pending AS (
-  SELECT metal, line_armp, line_name, op_status, route_rank,
-         row_number() OVER (PARTITION BY metal ORDER BY route_rank NULLS LAST, stage) AS rn
+  SELECT coil_id, line_armp, line_name, op_status, route_rank,
+         row_number() OVER (PARTITION BY coil_id ORDER BY route_rank NULLS LAST, stage) AS rn
   FROM {tgt}.gnk_movements
   WHERE op_status IN ('COUR', 'DISP', 'NDIS', 'BLOQ')
 )
 SELECT
-  l.metal,
+  l.coil_id,
+  l.coil_legacy,
   l.grade,
   l.finish_code,
   l.thickness_mm,
@@ -35,7 +38,7 @@ SELECT
        ELSE 'unplanned' END                                  AS position_state,
   round(timestampdiff(MINUTE, l.ts_end, {now_local}) / 60.0, 1) AS age_h
 FROM last_exec l
-LEFT JOIN pending p ON p.metal = l.metal AND p.rn = 1
+LEFT JOIN pending p ON p.coil_id = l.coil_id AND p.rn = 1
 WHERE l.rn = 1;
 
 CREATE OR REPLACE VIEW {tgt}.gold_gnk_wip_buffers AS
@@ -57,13 +60,13 @@ GROUP BY next_line_armp;
 -- The in-coil stop time is elapsed_min - rot_min on gold_gnk_coil_ops.
 CREATE OR REPLACE VIEW {tgt}.gold_gnk_line_gaps AS
 WITH seq AS (
-  SELECT line_armp, line_name, metal, ts_start, ts_end, shift_date, shift_name,
-         lag(ts_end) OVER (PARTITION BY line_armp ORDER BY ts_start) AS prev_end,
-         lag(metal)  OVER (PARTITION BY line_armp ORDER BY ts_start) AS prev_metal
+  SELECT line_armp, line_name, coil_legacy, ts_start, ts_end, shift_date, shift_name,
+         lag(ts_end)      OVER (PARTITION BY line_armp ORDER BY ts_start) AS prev_end,
+         lag(coil_legacy) OVER (PARTITION BY line_armp ORDER BY ts_start) AS prev_coil
   FROM {tgt}.gold_gnk_coil_ops
 )
 SELECT
-  line_armp, line_name, prev_metal, metal AS next_metal,
+  line_armp, line_name, prev_coil, coil_legacy AS next_coil,
   prev_end AS gap_start, ts_start AS gap_end,
   round(timestampdiff(SECOND, prev_end, ts_start) / 60.0, 1) AS gap_min,
   shift_date, shift_name

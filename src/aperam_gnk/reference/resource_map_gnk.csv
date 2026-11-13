@@ -1,2 +1,25 @@
-resource,site,line_armp,comment
-RD79,GGN,,"Gueugnon resource - out of GNK scope, excluded from the GNK views"
+resource,site,line_armp,armp_md,comment
+BAL1,GNK,GN-CR-BAL1,GN-CR-BAL1,"resource = local machine code (Machine in metal_movements)"
+BS2L,GNK,GN-RP-SLT2,GN-RP-SLT2-02-01,"slitter BS2 light head"
+BS2Z,GNK,GN-RP-SLT2,GN-RP-SLT2-02-02,"slitter BS2 heavy head"
+BS5,GNK,,,"local code BS5 present in metal_movements, machine_code_md_armp empty"
+BUL2,GNK,GN-CR-APL2,GN-CR-APL2,
+BUL3,GNK,GN-CR-APL3,GN-CR-APL3,
+BUL4,GNK,GN-CR-APL4,GN-CR-APL4,
+CRM3,GNK,GN-CR-CRM3,GN-CR-CRM3,
+CRM4,GNK,GN-CR-CRM4,GN-CR-CRM4,
+CRM5,GNK,GN-CR-CRM5,GN-CR-CRM5,
+LS2L,GNK,GN-RP-CTL2,GN-RP-CTL2-02-01,"cut-to-length LS2 light head"
+LS2Z,GNK,GN-RP-CTL2,GN-RP-CTL2-02-02,"cut-to-length LS2 heavy head"
+MKW2,GNK,GN-CR-CRM2,GN-CR-CRM2,
+SKP1,GNK,GN-CR-SKP1,GN-CR-SKP1,
+SL60,GNK,GN-RP-SLT6,GN-RP-SLT6,
+PS01,GNK,,,"Genk resource without match in metal_movements"
+RB08,GNK,,,"Genk resource without match in metal_movements"
+RB11,GNK,,,"Genk resource without match in metal_movements"
+RD10,GNK,,,"Genk resource without match in metal_movements"
+TS03,GNK,,,"Genk resource without match in metal_movements"
+TS04,GNK,,,"Genk resource without match in metal_movements"
+TS05,GNK,,,"Genk resource without match in metal_movements"
+TS06,GNK,,,"Genk resource without match in metal_movements"
+RD79,GGN,,,"stated as Gueugnon resource, then listed among Genk resources: TO CONFIRM, excluded meanwhile"

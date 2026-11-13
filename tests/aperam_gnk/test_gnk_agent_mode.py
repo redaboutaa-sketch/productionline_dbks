@@ -94,7 +94,7 @@ def _rows():
         {"line_armp": "GN-CR-SKP1", "line_name": "SKP1", "coils_waiting": 2, "tonnes_waiting": 37.1,
          "coils_blocked": 1, "tonnes_blocked": 14.8, "avg_age_h": 27.2, "max_age_h": 46.5},
     ]
-    on_line = [{"line_armp": "GN-CR-APL3", "metal": "G1"}]
+    on_line = [{"line_armp": "GN-CR-APL3", "coil_id": "20264100001100001"}]
     last = [
         {"line_armp": "GN-CR-APL3", "last_end": NOW - timedelta(minutes=5)},
         {"line_armp": "GN-CR-CRM2", "last_end": NOW - timedelta(minutes=320)},
@@ -103,7 +103,7 @@ def _rows():
     alerts = [{"armp_l3": "GN-CR-BAL1", "tag_id": "GN-CR-BAL1.ATM.DEWPOINT", "description": "dew point",
                "unit": "degC", "range_lower_limit": -70, "range_upper_limit": -40, "out_of_range": 175,
                "samples": 240, "min_value": -52, "max_value": -25, "first_hour": NOW - timedelta(hours=6)}]
-    blocked = [{"metal": "G9", "last_line_armp": "GN-CR-BAL1", "next_line_armp": "GN-CR-SKP1",
+    blocked = [{"coil_id": "20264100009100009", "coil_legacy": "20264100009", "last_line_armp": "GN-CR-BAL1", "next_line_armp": "GN-CR-SKP1",
                 "weight_t": 14.8, "age_h": 46.5}]
     return kpi, wip, on_line, last, alerts, blocked
 
@@ -199,7 +199,8 @@ def test_tools_validate_inputs():
 
     assert "error" in gnk_line_status.invoke({"line_armp": "BUL3; DROP TABLE x"})
     assert "error" in gnk_sensor_scan.invoke({"line_armp": "nope"})
-    assert "error" in gnk_coil_trace.invoke({"metal": "x' OR 1=1 --"})
+    assert "error" in gnk_coil_trace.invoke({"coil": "x' OR 1=1 --"})
+    assert "error" in gnk_coil_trace.invoke({"coil": "137002"})  # MetalPart alone is not a coil key
     from agent_server.aperam_gnk.tools import gnk_oee_report
 
     assert "error" in gnk_oee_report.invoke({"line_or_resource": "RD79' --"})
@@ -258,3 +259,19 @@ def test_context_and_tool_sql_only_reference_gnk_objects():
     src = inspect.getsource(gctx) + inspect.getsource(tools)
     used = set(re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", src))
     assert used and used <= created, used - created
+
+
+def test_coil_trace_uses_productid_legacy_or_metal_legacy(monkeypatch):
+    from agent_server.aperam_gnk import tools
+
+    seen = []
+    monkeypatch.setattr(tools, "_q", lambda sql, params, label: seen.append((label, sql, dict(params))) or [])
+    out = tools.gnk_coil_trace.invoke({"coil": "20254152535137002"})
+    assert out["coil_legacy"] == "20254152535"
+    mv = next(x for x in seen if x[0] == "gnk_tool_trace_movements")
+    assert "coil_id = %(c)s" in mv[1]
+    ops = next(x for x in seen if x[0] == "gnk_tool_trace_ops")
+    assert "coil_legacy = %(l)s" in ops[1] and ops[2]["l"] == "20254152535"
+    seen.clear()
+    tools.gnk_coil_trace.invoke({"coil": "20254152535"})
+    assert "coil_legacy = %(c)s" in next(x for x in seen if x[0] == "gnk_tool_trace_movements")[1]

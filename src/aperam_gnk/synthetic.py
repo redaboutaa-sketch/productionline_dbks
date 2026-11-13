@@ -130,7 +130,7 @@ class _Generator:
                 return inc
         return None
 
-    def _row(self, *, metal: str, part: str, heat: str, line: Line, machine: str, rank: int, start: datetime | None,
+    def _row(self, *, metal: str, part: str, heat: str, legacy: str | None = None, line: Line, machine: str, rank: int, start: datetime | None,
              end: datetime | None, status: str, finish: str, grade: str, length: float, width: float,
              thickness: float, weight_kg: int, shape: int, sp_set: float | None = None, sp_real: float | None = None,
              rot: int | None = None, passes: int | None = None) -> None:
@@ -141,8 +141,9 @@ class _Generator:
         op_name = "PCK" if line.kind == "packing" else machine
         self.rows.append({
             "ProductId": f"{metal}_{part}_{armp_rank}_{asset_tree}",
-            "ProductId_Legacy": f"{metal}{part}",
-            "Metal": metal, "Metal_Legacy": metal, "MetalPart": part, "MetalHeat": heat,
+            # Genk tracking key: ProductId_Legacy = Metal_Legacy (year + 7-digit coil number) + MetalPart
+            "ProductId_Legacy": f"{legacy or metal}{part}",
+            "Metal": metal, "Metal_Legacy": legacy or metal, "MetalPart": part, "MetalHeat": heat,
             "Machine": machine, "Machine_Indication": indication, "Asset_Tree": asset_tree, "ARMP_Rank": armp_rank,
             "StartDateTimeMachineSpecific": start, "EndDateTimeMachineSpecific": end,
             "unix_StartDateTimeMachineSpecific": _unix(start), "unix_EndDateTimeMachineSpecific": _unix(end),
@@ -187,7 +188,10 @@ class _Generator:
                 "route": route, "grade": self.rng.choice(GRADES[family]),
                 "width": float(self.rng.choice((1000, 1250, 1500, 1524, 2000))),
                 "thickness": self.rng.uniform(3.0, 6.0), "weight_t": self.rng.uniform(15, 26), "step": 0,
+                "legacy": f"{arrival.year}{(4100000 + i * 37) % 10_000_000:07d}",
             }
+            # pieces of the coil: (MetalPart, share of the coil weight); slitting / CTL create new parts
+            coil["parts"] = [(f"{(i * 13) % 800_000 + 100_000:06d}", 1.0)]
             heapq.heappush(heap, (arrival, i, coil))
         while heap:
             ready, key, c = heapq.heappop(heap)
@@ -212,7 +216,7 @@ class _Generator:
         passes = self.rng.randint(5, 11) if line.kind.startswith("crm") else None
         width, thickness, weight_t = c["width"], c["thickness"], c["weight_t"]
         length = weight_t / (width / 1000 * thickness / 1000 * 7.9)
-        common = dict(metal=c["metal"], heat=c["heat"], line=line, rank=rank, finish=route.product, grade=c["grade"],
+        common = dict(metal=c["metal"], legacy=c["legacy"], heat=c["heat"], line=line, rank=rank, finish=route.product, grade=c["grade"],
                       length=length, width=width, thickness=thickness, shape=3, passes=passes)
 
         if ready >= self.t_end:
@@ -220,14 +224,14 @@ class _Generator:
             for k in range(step_idx, len(route.steps)):
                 ln = LINES_BY_ARMP[route.steps[k]]
                 status = "DISP" if k == step_idx else "NDIS"
-                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part="00", machine=ln.machine_codes[0],
+                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part=c["parts"][0][0], machine=ln.machine_codes[0],
                           start=None, end=None, status=status, weight_kg=int(weight_t * 1000))
             return None
 
         machine = self.rng.choice(_MACHINE_CHOICE.get(armp, (line.machine_codes[0],)))
         if line.kind == "reception":
             end = ready + timedelta(minutes=5)
-            self._row(**common, part="00", machine=machine, start=ready, end=end, status="EXEC",
+            self._row(**common, part=c["parts"][0][0], machine=machine, start=ready, end=end, status="EXEC",
                       weight_kg=int(weight_t * 1000))
             c["step"] += 1
             return end
@@ -264,20 +268,26 @@ class _Generator:
 
         if end > self.t_end:
             status = "COUR" if start <= self.t_end else "DISP"
-            self._row(**common, part="00", machine=machine, start=start if status == "COUR" else None, end=None,
+            self._row(**common, part=c["parts"][0][0], machine=machine, start=start if status == "COUR" else None, end=None,
                       status=status, weight_kg=int(weight_t * 1000), sp_set=sp_set)
             for k in range(step_idx + 1, len(route.steps)):
                 ln = LINES_BY_ARMP[route.steps[k]]
-                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part="00", machine=ln.machine_codes[0],
+                self._row(**{**common, "line": ln, "rank": (k + 1) * 10}, part=c["parts"][0][0], machine=ln.machine_codes[0],
                           start=None, end=None, status="NDIS", weight_kg=int(weight_t * 1000))
             return None
 
         weight_out = weight_t * self.rng.uniform(0.975, 0.997)
-        parts = self.rng.randint(2, 6) if line.kind in ("slitter", "ctl") else 1
-        for p in range(parts):
-            self._row(**{**common, "width": (width - 20) / parts, "shape": 6 if line.kind == "ctl" else 3},
-                      part=f"{p + 1:02d}" if parts > 1 else "00", machine=machine, start=start, end=end,
-                      status="EXEC", weight_kg=int(weight_out * 1000 / parts), sp_set=sp_set, sp_real=sp_real, rot=rot)
+        if line.kind in ("slitter", "ctl"):  # the run creates new pieces with new part numbers
+            n = self.rng.randint(2, 6)
+            base = int(c["parts"][0][0])
+            c["parts"] = [(f"{base + 10 * (c['step'] + 1) + k + 1:06d}", 1.0 / n) for k in range(n)]
+            width_out = (width - 20) / n
+        else:
+            width_out = width / len(c["parts"])
+        for part, share in c["parts"]:  # one movement per piece, ProductId_Legacy carried over
+            self._row(**{**common, "width": width_out, "shape": 6 if line.kind == "ctl" else 3},
+                      part=part, machine=machine, start=start, end=end,
+                      status="EXEC", weight_kg=int(weight_out * 1000 * share), sp_set=sp_set, sp_real=sp_real, rot=rot)
         self.runs.append((armp, start, end))
         c["weight_t"] = weight_out
         c["step"] += 1
@@ -285,7 +295,7 @@ class _Generator:
         # BA coils annealed during the dew point excursion are put on quality hold before the next step
         if armp == "GN-CR-BAL1" and self._incident(armp, start) and c["step"] < len(route.steps):
             ln = LINES_BY_ARMP[route.steps[c["step"]]]
-            self._row(**{**common, "line": ln, "rank": rank + 10}, part="00", machine=ln.machine_codes[0],
+            self._row(**{**common, "line": ln, "rank": rank + 10}, part=c["parts"][0][0], machine=ln.machine_codes[0],
                       start=None, end=None, status="BLOQ", weight_kg=int(weight_out * 1000))
             return None
         return end
@@ -315,7 +325,7 @@ class _Generator:
                 end = start + timedelta(minutes=dur)
                 if end > self.t_end:
                     break
-                self._row(metal=heat, part="00", heat=heat, line=line, machine=machine, rank=rank * 10, start=start,
+                self._row(metal=heat, part="000000", heat=heat, line=line, machine=machine, rank=rank * 10, start=start,
                           end=end, status="EXEC", finish="SLAB", grade=grade, length=0.0, width=0.0, thickness=0.0,
                           weight_kg=int(tons * 1000), shape=7 if armp == "GN-ST-CCS1" else 5, rot=int(dur))
                 self.runs.append((armp, start, end))
@@ -381,12 +391,15 @@ INDICATORS_DDL = ", ".join(
     f"{c} {'date' if c == 'periode' else 'string' if c in ('resource', '_input_file_name') else 'timestamp' if c in ('_ingested_at', '_file_arrival_time') else 'double'}"
     for c in INDICATOR_COLUMNS
 )
-# Synthetic resources only (the real codes, e.g. RD79, are mapped in reference/resource_map_gnk.csv).
-# (resource, site, line_armp, comment). SYN_GGN01 belongs to another site and must be filtered out.
-SYNTHETIC_RESOURCE_MAP: list[tuple[str, str, str | None, str]] = [
-    ("SYN_APL3", "GNK", "GN-CR-APL3", "synthetic"), ("SYN_CRM2", "GNK", "GN-CR-CRM2", "synthetic"),
-    ("SYN_APL2", "GNK", "GN-CR-APL2", "synthetic"), ("SYN_BAL1", "GNK", "GN-CR-BAL1", "synthetic"),
-    ("SYN_SLT2", "GNK", "GN-RP-SLT2", "synthetic"), ("SYN_GGN01", "GGN", None, "synthetic, other site"),
+# Extra map rows for the synthetic data: (resource, site, line_armp, armp_md, comment). The real Genk
+# resources (machine codes) are already in reference/resource_map_gnk.csv; SYN_GGN01 is another site.
+SYNTHETIC_RESOURCE_MAP: list[tuple[str, str, str | None, str | None, str]] = [
+    ("SYN_GGN01", "GGN", None, None, "synthetic, other site"),
+]
+# Resources the synthetic indicators are generated for (machine code, line).
+SYNTHETIC_INDICATOR_RESOURCES: list[tuple[str, str | None]] = [
+    ("BUL3", "GN-CR-APL3"), ("MKW2", "GN-CR-CRM2"), ("BUL2", "GN-CR-APL2"), ("BAL1", "GN-CR-BAL1"),
+    ("BS2Z", "GN-RP-SLT2"), ("SYN_GGN01", None),
 ]
 
 
@@ -408,9 +421,11 @@ def generate_indicators(mm: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     t1 = runs.EndDateTimeMachineSpecific.max().normalize()
     incidents = _incidents(min(runs.StartDateTimeMachineSpecific).to_pydatetime())
     out = []
-    for resource, _site, line_armp, _ in SYNTHETIC_RESOURCE_MAP:
+    for resource, line_armp in SYNTHETIC_INDICATOR_RESOURCES:
         armp = line_armp or "GN-CR-APL3"
         lr = runs[runs.line == armp]
+        if line_armp and resource in set(runs.Machine):
+            lr = lr[lr.Machine == resource]
         for day in pd.date_range(t0, t1, freq="D"):
             d0, d1 = day.to_pydatetime(), (day + pd.Timedelta(days=1)).to_pydatetime()
             in_day = lr[(lr.EndDateTimeMachineSpecific > d0) & (lr.StartDateTimeMachineSpecific < d1)]

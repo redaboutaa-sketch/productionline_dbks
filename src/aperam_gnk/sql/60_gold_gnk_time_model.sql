@@ -21,13 +21,14 @@ SELECT
   s.resource,
   rm.site,
   rm.line_armp,
+  rm.armp_md,
   rm.comment,
   min(to_date(s.periode)) AS first_day,
   max(to_date(s.periode)) AS last_day,
   count(DISTINCT s.periode) AS days
 FROM {indicators} s
 LEFT JOIN {tgt}.gnk_resource_map rm ON rm.resource = s.resource
-GROUP BY s.resource, rm.site, rm.line_armp, rm.comment;
+GROUP BY s.resource, rm.site, rm.line_armp, rm.armp_md, rm.comment;
 
 CREATE OR REPLACE VIEW {tgt}.gnk_indicators_day AS
 WITH src AS (
@@ -49,6 +50,7 @@ SELECT
   b.resource,
   rm.site,
   rm.line_armp,
+  rm.armp_md,
   reg.line_name,
   to_date(b.periode)                                       AS prod_date,
   b.ct_s / 3600.0                                          AS calendar_h,
@@ -126,20 +128,22 @@ FROM (
 )
 WHERE loss_h > 1e-6;
 
--- Daily OEE per the Aperam definition. T0 and T1 are official (indicators table). T2 and T3 are PROXIES
+-- Daily OEE per the Aperam definition. A resource is a local machine code (metal_movements.Machine), so T2 / T3
+-- are joined on the machine code (BS2L and BS2Z stay separate) and the calendar date of coil end. T0 and T1 are official (indicators table). T2 and T3 are PROXIES
 -- from metal_movements until design speeds and quality outputs are connected:
 --   t2_proxy = SpeedRealised / SpeedSetpoint (setpoint, not design speed: slowdowns vs setpoint only,
 --              mix impact not captured, so T2 is overestimated)
 --   t3_proxy = metal yield, weight out / weight in (not good products / total output)
 CREATE OR REPLACE VIEW {tgt}.gold_gnk_oee_day AS
 WITH mm AS (
-  SELECT line_armp, to_date(ts_end) AS prod_date,
+  SELECT machine_codes AS machine_code, to_date(ts_end) AS prod_date,
          count(*) AS coils_mm, sum(weight_t) AS tonnes,
          CASE WHEN sum(speed_setpoint_m_min * length_m) > 0
               THEN sum(speed_realised_m_min * length_m) / sum(speed_setpoint_m_min * length_m) END AS t2_proxy,
          CASE WHEN sum(CASE WHEN weight_in_t > 0 THEN weight_in_t END) > 0
               THEN sum(CASE WHEN weight_in_t > 0 THEN weight_t END) / sum(CASE WHEN weight_in_t > 0 THEN weight_in_t END) END AS t3_proxy
   FROM {tgt}.gold_gnk_coil_ops
+  WHERE machine_codes NOT LIKE '%,%'
   GROUP BY 1, 2
 ),
 j AS (
@@ -153,7 +157,7 @@ j AS (
     CASE WHEN mm.t2_proxy IS NULL THEN NULL ELSE least(mm.t2_proxy, 1.05) END AS t2_proxy,
     CASE WHEN mm.t3_proxy IS NULL THEN NULL ELSE least(mm.t3_proxy, 1.0) END  AS t3_proxy
   FROM {tgt}.gnk_indicators_day i
-  LEFT JOIN mm ON mm.line_armp = i.line_armp AND mm.prod_date = i.prod_date
+  LEFT JOIN mm ON mm.machine_code = i.resource AND mm.prod_date = i.prod_date
 )
 SELECT
   j.*,

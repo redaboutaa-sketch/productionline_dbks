@@ -151,15 +151,45 @@ def test_indicators_table_is_wired_and_optional():
     skipped = "\n".join(render_statements("s.s", "t.t", indicators=None))
     assert "gold_gnk_oee_day" not in skipped
     custom = "\n".join(render_statements("s.s", "t.t", indicators="c.r.indicators_day_label",
-                                         extra_resource_map=[("SYN_X", "GNK", "GN-CR-APL3", "synthetic")]))
+                                         extra_resource_map=[("SYN_X", "GNK", "GN-CR-APL3", None, "synthetic")]))
     assert "FROM c.r.indicators_day_label" in custom and "'SYN_X'" in custom
 
 
 def test_rd79_is_gueugnon_and_excluded_from_gnk():
-    rows = {r: (site, armp) for r, site, armp, _ in load_resource_map()}
-    assert rows["RD79"] == ("GGN", None)
+    rows = {r: (site, armp) for r, site, armp, _, _ in load_resource_map()}
+    assert rows["RD79"] == ("GGN", None)  # contradictory information, excluded until confirmed
     text = "\n".join(render_statements("s.s", "t.t"))
     assert "rm.site = 'GNK'" in text  # only GNK resources enter gnk_indicators_day
+
+
+def test_genk_resources_are_machine_codes_mapped_to_lines():
+    from src.aperam_gnk.assets import machine_to_line
+
+    rows = {r: (site, armp, md) for r, site, armp, md, _ in load_resource_map()}
+    gnk = {r for r, (site, _, _) in rows.items() if site == "GNK"}
+    assert len(gnk) == 23  # 24 Genk resources announced, RD79 parked as GGN until confirmed
+    m2l = machine_to_line()
+    for r, (site, armp, md) in rows.items():
+        if armp:
+            assert m2l[r].armp == armp, r  # resource = local machine code of the same line
+            assert md.startswith(armp), r
+    assert rows["BS2Z"] == ("GNK", "GN-RP-SLT2", "GN-RP-SLT2-02-02")
+    assert rows["BS5"][1] is None and rows["PS01"][1] is None
+
+
+def test_productid_legacy_is_the_coil_key():
+    text = "\n".join(render_statements("s.s", "t.t"))
+    assert "mm.ProductId_Legacy                            AS coil_id" in text
+    assert "PARTITION BY p.coil_id" in text and "PARTITION BY coil_id ORDER BY ts_end DESC" in text
+    assert "gnk_coil_key_check" in text
+
+
+def test_synthetic_coil_ids_follow_the_genk_format(synthetic):
+    mm, _ = synthetic
+    coils = mm[mm.Metal_Legacy.str.len() == 11]
+    assert (coils.ProductId_Legacy.str[:11] == coils.Metal_Legacy).all()
+    assert coils.ProductId_Legacy.str.fullmatch(r"[0-9]{17}").all()
+    assert coils.groupby("ProductId_Legacy").Metal_Legacy.nunique().max() == 1
 
 
 def test_time_model_uses_the_aperam_labels():

@@ -61,17 +61,23 @@ DEFAULT_INDICATORS_TABLE = "dev_weu_next_best_action.raw.indicators_day_label"
 TIME_MODEL_SQL = "60_gold_gnk_time_model.sql"
 
 
-def load_resource_map(path: Path = RESOURCE_MAP_CSV) -> list[tuple[str, str | None, str | None, str | None]]:
-    """indicators_day_label.resource -> (site, ARMP line). Only site 'GNK' rows enter the GNK views."""
+def load_resource_map(path: Path = RESOURCE_MAP_CSV) -> list[tuple[str, str | None, str | None, str | None, str | None]]:
+    """(resource, site, line_armp level 3, armp_md detailed code, comment). Only site 'GNK' enters the views.
+
+    A resource of indicators_day_label is the local machine code (metal_movements.Machine), which is also
+    the join key with the movements for T2 / T3.
+    """
     import csv
 
+    def v(r: dict, k: str) -> str | None:
+        return (r.get(k) or "").strip() or None
+
     with path.open(encoding="utf-8") as fh:
-        return [(r["resource"].strip(), (r.get("site") or "").strip() or None,
-                 (r.get("line_armp") or "").strip() or None, (r.get("comment") or "").strip() or None)
+        return [(r["resource"].strip(), v(r, "site"), v(r, "line_armp"), v(r, "armp_md"), v(r, "comment"))
                 for r in csv.DictReader(fh) if r.get("resource", "").strip()]
 
 
-def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | None, str | None, str | None]] | None = None) -> list[str]:
+def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | None, str | None, str | None, str | None]] | None = None) -> list[str]:
     """CREATE TABLE statements for the reference data owned by assets.py."""
     registry = _values_table(
         f"{tgt}.gnk_line_registry",
@@ -131,7 +137,8 @@ def reference_statements(tgt: str, extra_resource_map: list[tuple[str, str | Non
     )
     resource_map = _values_table(
         f"{tgt}.gnk_resource_map",
-        [("resource", "STRING"), ("site", "STRING"), ("line_armp", "STRING"), ("comment", "STRING")],
+        [("resource", "STRING"), ("site", "STRING"), ("line_armp", "STRING"), ("armp_md", "STRING"),
+         ("comment", "STRING")],
         [*load_resource_map(), *(extra_resource_map or [])],
     )
     return [registry, mapping, tags, resource_map]
@@ -153,7 +160,7 @@ def now_local_sql(tz: str = SITE_TZ) -> str:
 
 def render_statements(src: str, tgt: str, sensor_lookback_days: int = 30,
                       include_reference: bool = True, indicators: str | None = DEFAULT_INDICATORS_TABLE,
-                      extra_resource_map: list[tuple[str, str | None, str | None, str | None]] | None = None) -> list[str]:
+                      extra_resource_map: list[tuple[str, str | None, str | None, str | None, str | None]] | None = None) -> list[str]:
     """All statements in dependency order. ``indicators`` = fully qualified daily OEE indicators table
     (``None`` skips the time-model views)."""
     for ident in (src, tgt, indicators or "x.y"):

@@ -36,7 +36,8 @@ GROUP BY 1, 2, 3;
 -- Refreshed by views.py / the scheduled job over a rolling look-back window.
 CREATE OR REPLACE TABLE {tgt}.gold_gnk_sensor_by_coil AS
 SELECT
-  c.metal,
+  c.coil_legacy,
+  c.coil_ids,
   c.line_armp,
   c.ts_start,
   c.ts_end,
@@ -55,4 +56,4 @@ JOIN {tgt}.gnk_sensor s
  AND s.ts BETWEEN c.ts_start AND c.ts_end
 WHERE c.ts_end >= {now_local} - INTERVAL {sensor_lookback_days} DAYS
   AND s.ts     >= {now_local} - INTERVAL {sensor_lookback_days} DAYS
-GROUP BY c.metal, c.line_armp, c.ts_start, c.ts_end, c.grade, c.thickness_mm, s.tag_id;
+GROUP BY c.coil_legacy, c.coil_ids, c.line_armp, c.ts_start, c.ts_end, c.grade, c.thickness_mm, s.tag_id;

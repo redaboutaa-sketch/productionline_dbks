@@ -33,7 +33,7 @@ GOLD = [
     "gold_gnk_line_kpi_shift_oee", "gold_gnk_line_kpi_daily", "gold_gnk_line_reference_rate",
     "gold_gnk_coil_position", "gold_gnk_wip_buffers", "gold_gnk_line_gaps", "gold_gnk_sensor_health_hourly",
     "gold_gnk_sensor_by_coil", "gnk_resource_map", "gnk_indicators_day", "gold_gnk_time_losses_day",
-    "gold_gnk_oee_day",
+    "gold_gnk_oee_day", "gnk_coil_key_check",
 ]
 
 
@@ -80,6 +80,10 @@ def main() -> int:
     spark.sql("SELECT line_armp, band, tuc_code, tuc_label, round(sum(loss_h),1) h FROM tgt.gold_gnk_time_losses_day"
               " GROUP BY 1,2,3,4 ORDER BY h DESC").show(8, False)
     spark.sql("SELECT * FROM tgt.gnk_indicators_resources ORDER BY resource").show(10, False)
+    spark.sql("SELECT * FROM tgt.gnk_coil_key_check").show(vertical=True, truncate=False)
+    spark.sql("SELECT coil_legacy, line_armp, coil_ids, parts_out, round(weight_in_t,2) w_in, round(weight_t,2) w_out,"
+              " round(yield_pct,2) yield_pct FROM tgt.gold_gnk_coil_ops WHERE line_armp IN ('GN-RP-SLT2','GN-RP-PCK1')"
+              " ORDER BY coil_legacy, ts_start").show(6, False)
     gap = spark.sql("SELECT max(abs(ts_identity_gap)) g FROM tgt.gnk_indicators_day").first()["g"]
     print(f"TS identity max gap: {gap}")
     failures = _run_agent_sql(spark)
@@ -125,11 +129,11 @@ def _run_agent_sql(spark) -> int:
         print(f"   EVENT {e['severity']:6s} {e['machine_id']} {e['event_type']}: {e['description'][:110]}")
     status = gtools.gnk_line_status.invoke({"line_armp": "GN-CR-CRM2", "hours": 72})
     print(f"[agent SQL] gnk_line_status CRM2: shifts={len(status['kpi_by_shift'])} stops={status['stops'][:1]}")
-    some_metal = (ctx["blocked_coils"] or [{"metal": None}])[0]["metal"]
-    if some_metal:
-        trace = gtools.gnk_coil_trace.invoke({"metal": some_metal})
-        print(f"[agent SQL] gnk_coil_trace {some_metal}: ops={len(trace['operations'])} "
-              f"sensor rows={len(trace['sensor_profile'])}")
+    some_coil = (ctx["blocked_coils"] or [{"coil_id": None}])[0]["coil_id"]
+    if some_coil:
+        trace = gtools.gnk_coil_trace.invoke({"coil": some_coil})
+        print(f"[agent SQL] gnk_coil_trace {some_coil}: movements={len(trace['movements'])} "
+              f"ops={len(trace['operations_of_the_coil'])} sensor rows={len(trace['sensor_profile'])}")
     scan = gtools.gnk_sensor_scan.invoke({"line_armp": "GN-CR-BAL1", "hours": 48})
     print("[agent SQL] gnk_sensor_scan BAL1 top:", [(t["tag_id"], t["z_recent_vs_baseline"]) for t in scan["tags"][:3]])
     oee = gtools.gnk_oee_report.invoke({"line_or_resource": "GN-CR-CRM2", "days": 30})

@@ -20,7 +20,8 @@ ferritic (1.4016/430, 1.4509...) grades. Lines are identified by their ARMP code
   C 1.5-2% -> 0.03%) and/or VOD1/VOD2 (vacuum 200 mbar) -> ladle stands SLM1-3 -> continuous slab caster CCS1
   (800-2100 mm wide, 160/200 mm thick, <= 1.6 m/min) -> slab grinders (GN-ST-CCS1-40-0x).
 - Genk has NO hot strip mill: slabs go by train (~6 h) or barge (~15 h) to the hot strip mill of Chatelet and
-  come back as black hot-rolled coils (reception GN-CR-RCP1).
+  come back as black hot-rolled coils (reception GN-CR-RCP1). Chatelet itself is OUT of the copilot's scope:
+  no Chatelet data is connected, never answer about what happens inside Chatelet.
 - Cold side GN-CR, in flow order: batch (bell) annealing BAF1 + coil preparation CPL2 (ferritic) ->
   annealing & pickling line APL3 (BUL3 + SL3: furnace 1200 C, 156 m, 13 zones, shot blasting, electrolytic
   Na2SO4 + mixed-acid pickling; product HRAP / No.1) -> cold rolling: CRM2 (MKW2, CVC 6-high, 1000-2100 mm,
@@ -33,7 +34,12 @@ ferritic (1.4016/430, 1.4509...) grades. Lines are identified by their ARMP code
   SS-RP-* lines belong to Aperam SteelCenter Limburg (service centre, outside the Genk route).
 - Finishes: HRAP / No.1 (hot rolled annealed pickled), 2D (cold rolled annealed pickled, dull),
   2B (2D + skin pass, bright), BA (bright annealed).
-- Physical logic: every coil is one 'Metal' moving line to line; the queue (WIP) in front of a line is its
+- Coil identification at Genk: coil_id = ProductId_Legacy (year + 7-digit coil number + part number, e.g.
+  20254152535137002) is THE tracking key of one physical piece, stable from black-coil reception to packing.
+  coil_legacy = Metal_Legacy (year + coil number, e.g. 20254152535) groups the parts of one coil. A slitter or
+  cut-to-length line creates new parts (new coil_id, same coil_legacy). ProductId changes at every operation
+  and MetalPart alone is not unique: never track a coil with them.
+- Physical logic: every piece moves line to line; the queue (WIP) in front of a line is its
   buffer. A line idle WITH a queue is stopped (breakdown, planned stop, roll change, crew); a line idle
   WITHOUT a queue is starved by its upstream. A queue that keeps growing in front of a line means that line
   is the bottleneck or is down. Holds (BLOQ) take metal out of the flow until quality releases it.
@@ -41,18 +47,19 @@ ferritic (1.4016/430, 1.4509...) grades. Lines are identified by their ARMP code
   All timestamps are LOCAL site time."""
 
 GNK_DATA_TABLES = """TABLES AVAILABLE TO sql_query - names are exact, no others exist for Genk:
-- gnk_movements(metal, metal_part, heat, machine_code, machine_indication, armp_l3, line_armp, line_name,
+- gnk_movements(coil_id, coil_legacy, metal, metal_part, heat, machine_code, machine_indication, armp_l3, line_armp, line_name,
   workshop, stage, stage_name, kind, is_logistic, ts_start, ts_end, elapsed_min, rot_min, op_status, operation,
   finish_code, grade, speed_setpoint_m_min, speed_realised_m_min, length_m, width_mm, thickness_mm, weight_t,
   passes_planned, passes_done, route_rank, shift_date, shift_name)
   Every movement of every coil at Genk (Site_FK = 3). op_status: EXEC executed, COUR on the line now,
   DISP released/waiting, NDIS planned not releasable, BLOQ quality/technical hold, SUPP cancelled.
   Production KPIs use EXEC only. weight_t is in tonnes, rot_min = real operation time without stops.
-- gold_gnk_coil_ops(metal, line_armp, line_name, stage, kind, machine_codes, ts_start, ts_end, elapsed_min,
+- gold_gnk_coil_ops(coil_legacy, coil_ids, metal, line_armp, line_name, stage, kind, machine_codes, ts_start, ts_end, elapsed_min,
   rot_min, grade, finish_code, heat, speed_setpoint_m_min, speed_realised_m_min, length_m, thickness_mm,
   weight_t, parts_out, passes_planned, passes_done, shift_date, shift_name, prev_line_armp, thickness_in_mm,
   weight_in_t, thickness_reduction_pct, yield_pct, wait_before_h, throughput_t_per_rot_h, speed_ratio)
-  One row per executed operation of a coil (slit parts re-aggregated). yield_pct = weight out / weight in.
+  One row per executed operation run of a coil (coil_legacy); coil_ids lists the pieces produced. yield_pct =
+  weight out / weight in (entry state from the same coil_id, or from the coil's previous run after a split).
 - gold_gnk_line_kpi_shift_oee(line_armp, line_name, stage, kind, shift_date, shift_name, coils, tonnes, busy_h,
   rot_h, utilisation, run_efficiency, speed_ratio, yield, throughput_t_per_rot_h, avg_thickness_mm,
   avg_thickness_reduction_pct, oee_proxy)   - all ratios are 0-1, NOT percentages.
@@ -62,18 +69,18 @@ GNK_DATA_TABLES = """TABLES AVAILABLE TO sql_query - names are exact, no others 
   run_efficiency, throughput_t_per_rot_h)
 - gold_gnk_line_reference_rate(line_armp, thickness_class, coils, p50_t_per_h, p90_t_per_h, p90_speed_m_min)
   Demonstrated rates over 90 days: the performance reference where no nameplate rate exists.
-- gold_gnk_coil_position(metal, grade, finish_code, thickness_mm, width_mm, weight_t, last_line_armp,
+- gold_gnk_coil_position(coil_id, coil_legacy, grade, finish_code, thickness_mm, width_mm, weight_t, last_line_armp,
   last_line_name, last_exec_end, next_line_armp, next_line_name, next_status, position_state, age_h)
   position_state: on_line, waiting, blocked, finished, to_hot_rolling, unplanned.
 - gold_gnk_wip_buffers(line_armp, line_name, coils_waiting, tonnes_waiting, coils_blocked, tonnes_blocked,
   avg_age_h, max_age_h)  - the queue in front of each line, now.
-- gold_gnk_line_gaps(line_armp, line_name, prev_metal, next_metal, gap_start, gap_end, gap_min, shift_date,
+- gold_gnk_line_gaps(line_armp, line_name, prev_coil, next_coil, gap_start, gap_end, gap_min, shift_date,
   shift_name)  - idle periods >= 15 min between two coils (the stops metal_movements can see).
 - gnk_sensor(tag_id, ts, dt, armp_l3, value, value_raw, in_range, has_master_data)  - raw historian, HUGE:
   always filter on armp_l3 AND a ts range of hours, never scan it unbounded.
 - gold_gnk_sensor_health_hourly(armp_l3, tag_id, hour, samples, out_of_range, out_of_range_nonzero,
   avg_value, min_value, max_value, std_value, non_numeric)
-- gold_gnk_sensor_by_coil(metal, line_armp, ts_start, ts_end, grade, thickness_mm, tag_id, samples, avg_value,
+- gold_gnk_sensor_by_coil(coil_legacy, coil_ids, line_armp, ts_start, ts_end, grade, thickness_mm, tag_id, samples, avg_value,
   min_value, max_value, std_value, out_of_range_ratio)  - sensor profile while each coil was on the line.
 - gnk_sensor_tags(tag_id, armp_l3, description, unit, nominal_value, range_lower_limit, range_upper_limit)
 - gnk_line_registry(line_armp, line_name, workshop, stage, stage_name, kind, machine_codes, is_logistic,
@@ -116,7 +123,10 @@ resource and CALENDAR day 00:00-24:00; CT = 86 400 s per day and resource):
   n_stri, tonnes, t2_proxy, t3_proxy, oee_t1t2t3, oee_t0t1t2t3, oee_has_t2_t3)
   THIS is the OEE to report for days, weeks and months; the gold_gnk_line_kpi_* OEE proxy is only for the
   shift in progress (the indicators are published per day).
-- gnk_resource_map(resource, site, line_armp, comment); gnk_indicators_resources(resource, site, line_armp,
+- gnk_resource_map(resource, site, line_armp, armp_md, comment): a resource is the LOCAL MACHINE CODE (BUL3,
+  MKW2, BS2Z...), = machine_code in gnk_movements; armp_md is the detailed ARMP code (GN-RP-SLT2-02-02).
+  Genk resources without a line in metal_movements (PS01, RB08, RB11, RD10, TS03-TS06) and BS5 (no ARMP code)
+  are reported with their resource code only. gnk_indicators_resources(resource, site, line_armp, armp_md,
   comment, first_day, last_day, days) lists every resource of the source table, all sites included.
 
 QUERY RULES:
@@ -129,7 +139,7 @@ QUERY RULES:
 
 GNK_TOOLS_NOTE = """GENK TOOLS (deterministic, prefer them to hand-written SQL):
 - gnk_line_status(line_armp, hours): KPIs per shift, last coils, stops, queue, envelope, demonstrated rates.
-- gnk_coil_trace(metal): route + status of every operation, yield/reduction per step, sensor profile per step.
+- gnk_coil_trace(coil): coil = ProductId_Legacy (one piece) or Metal_Legacy (whole coil); route + status of every operation, yield/reduction per step, sensor profile per step.
 - gnk_sensor_scan(line_armp, hours): every tag of a line vs its 7-day baseline, ranked by deviation.
 - gnk_flow_overview(): queues in front of every line with hours of cover, plus coils on hold.
 - gnk_oee_report(line_or_resource, days): OEE (Aperam T0..T3) per day, period totals, TUC loss Pareto, MTBF/MTTR.
@@ -138,7 +148,7 @@ detect_anomalies, estimate_rul, schedule_recovery, production_forecast, quality_
 oee_loss_analysis, multi_shift_plan, query_plant_docs) are NOT connected to Genk data yet: do not call them."""
 
 GNK_CITATION_RULES = """DATA CITATION RULES:
-- Cite exact values with their unit and source: tonnes, t/h, m/min, %, coils, minutes, ARMP code, Metal id,
+- Cite exact values with their unit and source: tonnes, t/h, m/min, %, coils, minutes, ARMP code, coil id (ProductId_Legacy),
   timestamp (local time), e.g. "gold_gnk_line_gaps: GN-CR-CRM2 idle 320 min from 15:53".
 - Ratios in the tables are 0-1: convert to % when you write them.
 - Never invent a cause. metal_movements shows THAT a line stopped, not WHY: unless a sensor, a hold or a
@@ -164,7 +174,7 @@ _STRUCTURE = (
              "`- **GN-CR-CRM2 @ 15:53**: idle 320 min, 31 coils / 649 t waiting`")
     .replace("`- **Crown caps**: 8,200 units, depletes in 42 min at current rate`",
              "`- **Queue APL3**: 859 t, 8.1 h of cover at 106 t/h`")
-    .replace("Bold every machine_id, material_id,", "Bold every ARMP code, Metal id,")
+    .replace("Bold every machine_id, material_id,", "Bold every ARMP code, coil id (ProductId_Legacy),")
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,7 +210,7 @@ customer-facing risks on stainless flat products (HRAP, 2D, 2B, BA).
 Method:
 1. Holds: blocked_coils in context / gold_gnk_coil_position (position_state = 'blocked'): which coils,
    which grade/finish, after which line, since when, how many tonnes.
-2. For a held coil, gnk_coil_trace(metal): find the operation where its sensor profile left the limits
+2. For a held coil, gnk_coil_trace(coil_id): find the operation where its sensor profile left the limits
    (e.g. BAL1 dew point, APL3 furnace zone temperature, skin-pass elongation, CRM flatness).
 3. Common cause: other coils processed on the same line in the same window with the same excursion
    (gold_gnk_sensor_by_coil) are suspect too - list them, they may need to be held.
@@ -356,7 +366,7 @@ Available specialists:
   shift know (FR passation, releve, brief de poste; NL ploegoverdracht)
 - general: simple status question with no specific issue
 
-Rules: prefer the most specific specialist over general; a question naming a Metal / coil id and quality
+Rules: prefer the most specific specialist over general; a question naming a coil id (ProductId_Legacy) and quality
 goes to quality_specialist, a question naming a coil and 'where / late' goes to supply_chain_advisor.
 
 Respond with ONLY the specialist name, nothing else."""
@@ -389,7 +399,7 @@ FORMATTING RULES - strict:
 - All 5 headings present. Every section is a bullet list, <= 5 bullets, <= 18 words each.
 - Each bullet starts with the key value in bold then `:`, e.g. `- **GN-CR-CRM2 @ 15:53**: idle 320 min, 649 t waiting`.
 - Priority Actions is a numbered list. Confidence is one line: `**HIGH** / **MEDIUM** / **LOW** - <= 12 words`.
-- Bold ARMP codes, Metal ids, numbers and timestamps. No tables, no ### headings. <= 250 words in total.
+- Bold ARMP codes, coil ids, numbers and timestamps. No tables, no ### headings. <= 250 words in total.
 - Ratios from tables are 0-1: show them as %.
 
 CRITICAL OVERLAY - when a main line (APL3, CRM2, APL2, BAL1, BS2) is stopped with a large queue, or several

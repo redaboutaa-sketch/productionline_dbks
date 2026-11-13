@@ -19,7 +19,7 @@ from agent_server.aperam_gnk.context import site_now
 from src.aperam_gnk.assets import LINES_BY_ARMP, armp_level3
 
 _ARMP = re.compile(r"^[A-Z]{2}-[A-Z]{2}-[A-Z0-9]{2,6}(-\d{2}){0,2}$")
-_METAL = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
+_COIL = re.compile(r"^[0-9]{11,24}$")
 
 
 def _q(sql: str, params: dict, label: str) -> list[dict]:
@@ -79,14 +79,14 @@ def gnk_line_status(line_armp: str, hours: int = 24) -> dict:
             " FROM gold_gnk_line_kpi_shift_oee WHERE line_armp = %(a)s AND shift_date >= %(since_d)s"
             " ORDER BY shift_date, shift_name", p, "gnk_tool_kpi"),
         "last_coils": _q(
-            "SELECT metal, grade, finish_code, ts_start, ts_end, round(elapsed_min) AS elapsed_min, rot_min,"
+            "SELECT coil_legacy, coil_ids, grade, finish_code, ts_start, ts_end, round(elapsed_min) AS elapsed_min, rot_min,"
             " round(weight_t,1) AS weight_t, thickness_in_mm, thickness_mm, round(speed_setpoint_m_min) AS sp_set,"
             " round(speed_realised_m_min) AS sp_real, round(yield_pct,2) AS yield_pct, passes_done,"
             " round(wait_before_h,1) AS wait_before_h"
             " FROM gold_gnk_coil_ops WHERE line_armp = %(a)s AND ts_end >= %(since)s ORDER BY ts_end DESC LIMIT 10",
             p, "gnk_tool_last_coils"),
         "stops": _q(
-            "SELECT gap_start, gap_end, gap_min, prev_metal, next_metal FROM gold_gnk_line_gaps"
+            "SELECT gap_start, gap_end, gap_min, prev_coil, next_coil FROM gold_gnk_line_gaps"
             " WHERE line_armp = %(a)s AND gap_end >= %(since)s ORDER BY gap_min DESC LIMIT 15", p, "gnk_tool_gaps"),
         "queue": _q("SELECT * FROM gold_gnk_wip_buffers WHERE line_armp = %(a)s", p, "gnk_tool_queue"),
         "demonstrated_rates": _q(
@@ -97,34 +97,41 @@ def gnk_line_status(line_armp: str, hours: int = 24) -> dict:
 
 
 @tool
-def gnk_coil_trace(metal: str) -> dict:
-    """Full trace of ONE coil (metal_movements.Metal): route, status of every operation,
-    geometry and yield per operation, and the sensor profile recorded while it was on each line.
+def gnk_coil_trace(coil: str) -> dict:
+    """Full trace of a Genk coil: route, status of every operation, geometry and yield per operation, and
+    the sensor profile recorded while it was on each line.
 
-    Use it for quality holds (BLOQ), customer claims, 'why is this coil late' and genealogy questions.
+    coil: ProductId_Legacy (17 digits = year + 7-digit coil number + part, e.g. '20254152535137002', the
+    tracking key of one piece from black-coil reception to packing) or Metal_Legacy (year + coil number,
+    e.g. '20254152535', all parts of the coil). Use it for quality holds (BLOQ), claims, late coils, genealogy.
     """
-    m = (metal or "").strip()
-    if not _METAL.match(m):
-        return {"error": f"'{metal}' is not a valid Metal identifier"}
-    p = {"m": m}
+    c = (coil or "").strip()
+    if not _COIL.match(c):
+        return {"error": f"'{coil}' is neither a ProductId_Legacy nor a Metal_Legacy (digits only)"}
+    p = {"c": c}
+    legacy = c if len(c) <= 11 else c[:11]
+    p["l"] = legacy
+    piece_filter = "coil_id = %(c)s" if len(c) > 11 else "coil_legacy = %(c)s"
     return {
-        "metal": m,
+        "coil": c,
+        "coil_legacy": legacy,
         "movements": _q(
-            "SELECT machine_code, machine_indication, line_armp, line_name, op_status, route_rank, ts_start, ts_end,"
-            " round(weight_t,2) AS weight_t, thickness_mm, width_mm, grade, finish_code, heat, metal_part"
-            " FROM gnk_movements WHERE metal = %(m)s ORDER BY coalesce(ts_start, timestamp'2999-01-01'), route_rank",
-            p, "gnk_tool_trace_movements"),
-        "operations": _q(
-            "SELECT line_armp, ts_start, ts_end, round(elapsed_min) AS elapsed_min, rot_min, thickness_in_mm,"
-            " thickness_mm, round(thickness_reduction_pct,1) AS reduction_pct, round(yield_pct,2) AS yield_pct,"
-            " round(speed_ratio,3) AS speed_ratio, parts_out, round(wait_before_h,1) AS wait_before_h"
-            " FROM gold_gnk_coil_ops WHERE metal = %(m)s ORDER BY ts_start", p, "gnk_tool_trace_ops"),
+            "SELECT coil_id, machine_code, machine_indication, line_armp, line_name, op_status, route_rank,"
+            " ts_start, ts_end, round(weight_t,2) AS weight_t, thickness_mm, width_mm, grade, finish_code, heat"
+            f" FROM gnk_movements WHERE {piece_filter}"
+            " ORDER BY coalesce(ts_start, timestamp'2999-01-01'), route_rank, coil_id", p, "gnk_tool_trace_movements"),
+        "operations_of_the_coil": _q(
+            "SELECT line_armp, machine_codes, coil_ids, ts_start, ts_end, round(elapsed_min) AS elapsed_min, rot_min,"
+            " thickness_in_mm, thickness_mm, round(thickness_reduction_pct,1) AS reduction_pct,"
+            " round(weight_t,2) AS weight_t, round(yield_pct,2) AS yield_pct, round(speed_ratio,3) AS speed_ratio,"
+            " parts_out, round(wait_before_h,1) AS wait_before_h"
+            " FROM gold_gnk_coil_ops WHERE coil_legacy = %(l)s ORDER BY ts_start", p, "gnk_tool_trace_ops"),
         "sensor_profile": _q(
             "SELECT s.line_armp, s.tag_id, t.description, t.unit, s.samples, round(s.avg_value,3) AS avg_value,"
             " round(s.min_value,3) AS min_value, round(s.max_value,3) AS max_value,"
             " round(s.out_of_range_ratio,3) AS out_of_range_ratio, t.range_lower_limit, t.range_upper_limit"
             " FROM gold_gnk_sensor_by_coil s LEFT JOIN gnk_sensor_tags t ON t.tag_id = s.tag_id"
-            " WHERE s.metal = %(m)s ORDER BY s.ts_start, s.tag_id", p, "gnk_tool_trace_sensors"),
+            " WHERE s.coil_legacy = %(l)s ORDER BY s.ts_start, s.tag_id", p, "gnk_tool_trace_sensors"),
     }
 
 
@@ -191,7 +198,7 @@ def gnk_flow_overview() -> dict:
         w["demonstrated_p50_t_per_h"] = round(r, 1) if r else None
         w["queue_cover_h"] = round(w["tonnes_waiting"] / r, 1) if r and w.get("tonnes_waiting") is not None else None
     wip.sort(key=lambda w: (LINES_BY_ARMP[w["line_armp"]].stage if w.get("line_armp") in LINES_BY_ARMP else 999))
-    blocked = _q("SELECT metal, grade, finish_code, last_line_armp, next_line_armp, weight_t, age_h"
+    blocked = _q("SELECT coil_id, coil_legacy, grade, finish_code, last_line_armp, next_line_armp, weight_t, age_h"
                  " FROM gold_gnk_coil_position WHERE position_state = 'blocked' ORDER BY age_h DESC LIMIT 25",
                  {}, "gnk_tool_flow_blocked")
     return {"queues_in_flow_order": wip, "blocked_coils": blocked}

@@ -122,12 +122,12 @@ def _queries(shift_date: date, shift_name: str, now: datetime) -> dict[str, tupl
         ),
         "wip": ("SELECT * FROM gold_gnk_wip_buffers ORDER BY tonnes_waiting DESC", {}, "gnk_wip"),
         "on_line": (
-            "SELECT next_line_armp AS line_armp, metal, grade, finish_code, thickness_mm, width_mm, weight_t"
+            "SELECT next_line_armp AS line_armp, coil_id, coil_legacy, grade, finish_code, thickness_mm, width_mm, weight_t"
             " FROM gold_gnk_coil_position WHERE position_state = 'on_line'",
             {}, "gnk_on_line",
         ),
         "blocked": (
-            "SELECT metal, grade, finish_code, last_line_armp, next_line_armp, weight_t, age_h"
+            "SELECT coil_id, coil_legacy, grade, finish_code, last_line_armp, next_line_armp, weight_t, age_h"
             " FROM gold_gnk_coil_position WHERE position_state = 'blocked' ORDER BY age_h DESC LIMIT 30",
             {}, "gnk_blocked",
         ),
@@ -137,7 +137,7 @@ def _queries(shift_date: date, shift_name: str, now: datetime) -> dict[str, tupl
             {"since": (now - timedelta(days=7)).isoformat(sep=" ")}, "gnk_last_activity",
         ),
         "gaps": (
-            "SELECT line_armp, line_name, prev_metal, next_metal, gap_start, gap_end, gap_min"
+            "SELECT line_armp, line_name, prev_coil, next_coil, gap_start, gap_end, gap_min"
             " FROM gold_gnk_line_gaps WHERE gap_end >= %(since)s ORDER BY gap_min DESC LIMIT 20",
             {"since": (now - timedelta(hours=24)).isoformat(sep=" ")}, "gnk_gaps",
         ),
@@ -236,7 +236,7 @@ def derive_line_state(
             "stage": line.stage_name if line else None,
             "status": status,
             "idle_min": None if idle_min is None else round(idle_min),
-            "coil_on_line": coils_on_line[0].get("metal") if coils_on_line else None,
+            "coil_on_line": coils_on_line[0].get("coil_id") if coils_on_line else None,
             "coils_this_shift": int(k.get("coils") or 0),
             "tonnes_this_shift": _f(k.get("tonnes"), 0.0),
             "throughput_t_per_rot_h": _f(k.get("throughput_t_per_rot_h")),

@@ -137,12 +137,18 @@ est en erreur. Les tests unitaires se lancent avec `pytest tests/aperam_gnk`.
 
 ## 3. Hypothèses à valider avec les propriétaires des données
 
-Le code est écrit pour être corrigé en un seul endroit si une hypothèse est fausse.
+Le code est écrit pour être corrigé en un seul endroit si une hypothèse est fausse. Châtelet est hors périmètre.
 
-1. **Identifiant de bobine** : `Metal` reste-t-il stable de la réception bobine noire jusqu'à
-   l'emballage ? Les calculs de rendement, de réduction d'épaisseur et d'attente entre lignes en
-   dépendent (`20_gold_gnk_coil_ops.sql`). Si l'identifiant change (refendage, reprise…), il faut une
-   table de généalogie.
+1. **Identifiant de bobine** : résolu, sur la base d'un parcours de Genk.
+   - `ProductId_Legacy` (année + n° de bobine sur 7 chiffres + partie) est la clé de suivi d'un morceau,
+     de la réception bobine noire jusqu'à l'emballage. Dans les vues, elle s'appelle `coil_id`.
+   - `Metal_Legacy` (année + n° de bobine) regroupe les parties d'une même bobine. Dans les vues, elle
+     s'appelle `coil_legacy`.
+   - Un refendage ou une coupe à longueur crée de nouvelles parties : le rendement de cette opération
+     est alors calculé au niveau de la bobine.
+
+   La conclusion repose sur un seul exemple. La vue `gnk_coil_key_check` la vérifie sur tout
+   l'historique : format, préfixe, unicité, parcours réception → emballage.
 2. **`OperationStatus`** : interprétation retenue : EXEC exécutée, COUR en cours, DISP disponible,
    NDIS non disponible, BLOQ bloquée qualité/technique, SUPP supprimée. À confirmer.
 3. **Horodatages début/fin** : leur sens n'est documenté que pour les lignes de recuit-décapage.
@@ -157,13 +163,17 @@ Le code est écrit pour être corrigé en un seul endroit si une hypothèse est 
 7. **Postes** : 3 × 8 h, 06-14 / 14-22 / 22-06, en heure locale (Europe/Brussels) ?
 8. **Emballage** : seules les opérations `PCKI`, `PCKG`, `PCK` comptent (commentaire du mapping).
 9. **Indicateurs journaliers** :
-   - quelles ressources de `indicators_day_label` appartiennent à Genk, et à quelles lignes ARMP
-     correspondent-elles ? (`RD79` est à Gueugnon.)
-   - quelle est la définition des sous-codes FTTE / FTTG / FTTI / FTTM, de `N_FUST` et de `N_STRI` ?
-   - où trouver les vitesses nominales (design speed), pour un vrai T2, et les produits bons / production
-     totale, pour un vrai T3 ?
-   - les données montrent que MTBF et MTTR sont calculés avec `N_FT`, et non avec `N_FUST`
-     (ex. 2015-10-28 : N_FT = 9, N_FUST = 8, MTTR = FT / 9). À confirmer.
+   - les 24 ressources de Genk sont déclarées dans `resource_map_gnk.csv`. Une ressource correspond au
+     code machine local, ce qui permet de rattacher T2 et T3 machine par machine.
+   - 15 ressources ont une ligne ARMP. BS5 a un code local mais pas de code ARMP. PS01, RB08, RB11, RD10
+     et TS03 à TS06 n'ont pas de correspondance dans les mouvements : leurs indicateurs sont gardés sous
+     leur code de ressource.
+   - **RD79 : à confirmer.** Elle a d'abord été attribuée à Gueugnon, puis listée parmi les ressources de
+     Genk. Elle reste exclue en attendant.
+   - définitions des sous-codes FTTE / FTTG / FTTI / FTTM, de `N_FUST` et de `N_STRI` ;
+   - source des vitesses nominales (pour un vrai T2) et des produits bons / production totale (pour un
+     vrai T3) ;
+   - MTBF et MTTR : les données les calculent avec `N_FT`, pas avec `N_FUST`. À confirmer.
 10. **Aciérie** : `Metal` désigne-t-il la coulée ou la brame sur EAF/AOD/CCS ? Comment se fait le lien
    brame → bobine noire après Châtelet ?
 
